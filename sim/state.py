@@ -55,6 +55,7 @@ class CellResult:
     unserved_general_mbps: float
     latency_ms: float
     hops: float
+    transit_mbps: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +71,8 @@ class Totals:
     links_over_80pct: int
     avg_ground_latency_ms: float
     avg_haps_latency_ms: float
+    pct_crossing_backhaul: float = 0.0
+    backhaul_links_over_80pct: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

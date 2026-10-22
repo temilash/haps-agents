@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -43,6 +44,18 @@ class LatencyConfig(BaseModel):
     speed_km_per_ms: float = 300
 
 
+class MeshConfig(BaseModel):
+    endpoint_exponent: float = 1.5
+    endpoint_headroom: float = 1.2
+    backhaul_headroom: float = 1.5
+    backhaul_min_mbps: float = 500
+    transit_affected_by_outage: bool = True
+    backhaul_path: str = "data/processed/backhaul.parquet"
+    ground_base_ms: float = 10
+    per_backhaul_hop_ms: float = 0.5
+    latency_top_endpoints: int = 10
+
+
 class PlatformConfig(BaseModel):
     id: str
     lat: float
@@ -50,10 +63,12 @@ class PlatformConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    ground_model: Literal["simple", "mesh"] = "simple"
     grid: GridConfig = Field(default_factory=GridConfig)
     demand: DemandConfig = Field(default_factory=DemandConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     latency: LatencyConfig = Field(default_factory=LatencyConfig)
+    mesh: MeshConfig = Field(default_factory=MeshConfig)
     haps: list[PlatformConfig]
     gateways: list[PlatformConfig]
 

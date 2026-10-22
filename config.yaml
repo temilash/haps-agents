@@ -1,3 +1,5 @@
+ground_model: simple   # simple | mesh
+
 grid:
   h3_resolution: 5
   cells_path: data/processed/cells.parquet
@@ -28,6 +30,17 @@ latency:
   haps_base_ms: 20
   per_haps_ms: 3
   speed_km_per_ms: 300
+
+mesh:
+  endpoint_exponent: 1.5
+  endpoint_headroom: 1.2
+  backhaul_headroom: 1.5
+  backhaul_min_mbps: 500
+  transit_affected_by_outage: true
+  backhaul_path: data/processed/backhaul.parquet
+  ground_base_ms: 10
+  per_backhaul_hop_ms: 0.5
+  latency_top_endpoints: 10
 
 haps:
   - id: H1

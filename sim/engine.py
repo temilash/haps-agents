@@ -16,6 +16,7 @@ from sim.demand import (
     set_tower_status as _set_tower_status,
 )
 from sim.grid import load_or_build_cells
+from sim import mesh
 from sim.latency import cell_latency_and_hops, haps_routes
 from sim.network import (
     cell_coverage,
@@ -123,11 +124,44 @@ class Simulation:
         self._base_residuals = initial_residuals(
             self.haps, self.gateways, self.config.network
         )
+        if self.config.ground_model == "mesh":
+            self._init_mesh()
+
+    def _init_mesh(self) -> None:
+        mcfg = self.config.mesh
+        self.pairs = mesh.neighbour_pairs(self.cells)
+        self.endpoint_weights = mesh.endpoint_weights(self.cells, mcfg.endpoint_exponent)
+        self.gw_cell = mesh.gateway_cells(self.gateways, self.cells)
+        self.ground_hops = mesh.hops_to_top_endpoints(
+            self.cells, self.pairs, self.endpoint_weights, mcfg.latency_top_endpoints
+        )
+        peak = self.config.demand.active_fraction_peak
+        peak_demand = {
+            c.cell_id: sum(demand_mbps(c.population, peak, self.config.demand))
+            for c in self.cells
+        }
+        self.backhaul = mesh.load_or_calibrate(
+            self.root / mcfg.backhaul_path,
+            mesh.calibration_key(
+                self.cells, self.config.demand, mcfg, self.config.grid.h3_resolution
+            ),
+            self.cells,
+            self.pairs,
+            peak_demand,
+            {c.cell_id: c.ground_capacity_mbps for c in self.cells},
+            self.endpoint_weights,
+            mcfg,
+        )
 
     def set_tower_status(self, lat: float, lon: float, radius_km: float, value: float) -> None:
         _set_tower_status(self.cells, lat, lon, radius_km, value)
 
     def step(self, sim_time: float | str | datetime | time) -> TickResult:
+        if self.config.ground_model == "mesh":
+            return self._step_mesh(sim_time)
+        return self._step_simple(sim_time)
+
+    def _step_simple(self, sim_time: float | str | datetime | time) -> TickResult:
         hour, label = _parse_hour(sim_time)
         frac = active_fraction(hour, self.config.demand)
         net = self.config.network
@@ -256,5 +290,144 @@ class Simulation:
                 links_over_80pct=over80,
                 avg_ground_latency_ms=avg_ground,
                 avg_haps_latency_ms=avg_haps,
+            ),
+        )
+
+    def _haps_links(self, link_flow: dict[tuple[str, str, str], float]) -> list[LinkLoad]:
+        orig = self._base_residuals
+        links: list[LinkLoad] = []
+        for hid, cap in orig.access.items():
+            flow = link_flow.get(("access", hid, hid), 0.0)
+            links.append(LinkLoad("access", hid, hid, flow, cap, flow / cap if cap else 0.0))
+        for (a, b), cap in orig.isl.items():
+            flow = link_flow.get(("isl", a, b), 0.0)
+            links.append(LinkLoad("isl", a, b, flow, cap, flow / cap if cap else 0.0))
+        for (hid, gid), cap in orig.feeder.items():
+            flow = link_flow.get(("feeder", hid, gid), 0.0)
+            links.append(LinkLoad("feeder", hid, gid, flow, cap, flow / cap if cap else 0.0))
+        return links
+
+    def _step_mesh(self, sim_time: float | str | datetime | time) -> TickResult:
+        hour, label = _parse_hour(sim_time)
+        frac = active_fraction(hour, self.config.demand)
+        mcfg = self.config.mesh
+        status = {c.cell_id: c.tower_status for c in self.cells}
+
+        demand_c: dict[str, float] = {}
+        demand_g: dict[str, float] = {}
+        for cell in self.cells:
+            crit, gen = demand_mbps(cell.population, frac, self.config.demand)
+            demand_c[cell.cell_id] = crit
+            demand_g[cell.cell_id] = gen
+        total_demand = sum(demand_c.values()) + sum(demand_g.values())
+        total_crit = sum(demand_c.values())
+
+        # Backhaul capacity this tick, per direction.
+        backhaul_cap: dict[tuple[str, str], float] = {}
+        for (a, b), cap in self.backhaul.capacity.items():
+            if mcfg.transit_affected_by_outage:
+                cap *= min(status[a], status[b])
+            backhaul_cap[(a, b)] = cap
+            backhaul_cap[(b, a)] = cap
+
+        residuals = mesh.MeshResiduals(
+            backhaul=dict(backhaul_cap),
+            endpoint=mesh.endpoint_capacities(
+                self.endpoint_weights, total_demand, mcfg.endpoint_headroom
+            ),
+            access={c.cell_id: c.ground_capacity_mbps * c.tower_status for c in self.cells},
+            haps=self._base_residuals.copy(),
+        )
+        pass_c = mesh.route_mesh_pass(
+            demand_c, self.coverage, self.gw_cell, self.pairs, residuals
+        )
+        pass_g = mesh.route_mesh_pass(
+            demand_g, self.coverage, self.gw_cell, self.pairs, pass_c.residuals
+        )
+        cell_haps = merge_cell_haps(pass_c.cell_haps, pass_g.cell_haps)
+        link_flow = merge_flows(pass_c.links, pass_g.links)
+        per_cell_haps: dict[str, dict[str, float]] = {}
+        for (cid, hid), mbps in cell_haps.items():
+            per_cell_haps.setdefault(cid, {})[hid] = mbps
+
+        cell_results: list[CellResult] = []
+        served_all = 0.0
+        served_crit = 0.0
+        unserved_c = 0.0
+        unserved_g = 0.0
+        ground_traffic = 0.0
+        ground_lat_num = 0.0
+        haps_lat_num = 0.0
+        haps_traffic = 0.0
+
+        for cell in self.cells:
+            cid = cell.cell_id
+            d_c = demand_c[cid]
+            d_g = demand_g[cid]
+            g_c = pass_c.ground.get(cid, 0.0)
+            g_g = pass_g.ground.get(cid, 0.0)
+            h_c = pass_c.haps.get(cid, 0.0)
+            h_g = pass_g.haps.get(cid, 0.0)
+            u_c = max(0.0, d_c - g_c - h_c)
+            u_g = max(0.0, d_g - g_g - h_g)
+            g_served = g_c + g_g
+            ground_ms = mcfg.ground_base_ms + mcfg.per_backhaul_hop_ms * self.ground_hops[cid]
+            per_haps = per_cell_haps.get(cid, {})
+            latency, hops = cell_latency_and_hops(g_served, ground_ms, per_haps, self.routes)
+            cell_results.append(
+                CellResult(
+                    cell_id=cid,
+                    demand_critical_mbps=d_c,
+                    demand_general_mbps=d_g,
+                    ground_served_mbps=g_served,
+                    haps_served_critical_mbps=h_c,
+                    haps_served_general_mbps=h_g,
+                    unserved_critical_mbps=u_c,
+                    unserved_general_mbps=u_g,
+                    latency_ms=latency,
+                    hops=hops,
+                    transit_mbps=pass_c.transit.get(cid, 0.0) + pass_g.transit.get(cid, 0.0),
+                )
+            )
+            served_all += g_served + h_c + h_g
+            served_crit += g_c + h_c
+            unserved_c += u_c
+            unserved_g += u_g
+            ground_traffic += g_served
+            ground_lat_num += g_served * ground_ms
+            for hid, mbps in per_haps.items():
+                route = self.routes.get(hid)
+                if route is None:
+                    continue
+                haps_lat_num += mbps * route.latency_ms
+                haps_traffic += mbps
+
+        links = self._haps_links(link_flow)
+        for (a, b), cap in backhaul_cap.items():
+            flow = link_flow.get(("backhaul", a, b), 0.0)
+            links.append(LinkLoad("backhaul", a, b, flow, cap, flow / cap if cap else 0.0))
+
+        over80 = sum(1 for link in links if link.utilisation >= 0.8)
+        bh_over80 = sum(
+            1 for link in links if link.link_type == "backhaul" and link.utilisation >= 0.8
+        )
+        crossed = pass_c.crossed_backhaul_mbps + pass_g.crossed_backhaul_mbps
+        return TickResult(
+            sim_time=label,
+            cells=cell_results,
+            links=links,
+            totals=Totals(
+                demand_mbps=total_demand,
+                pct_served=100.0 * served_all / total_demand if total_demand else 100.0,
+                pct_critical_served=100.0 * served_crit / total_crit if total_crit else 100.0,
+                unserved_critical_mbps=unserved_c,
+                unserved_general_mbps=unserved_g,
+                links_over_80pct=over80,
+                avg_ground_latency_ms=(
+                    ground_lat_num / ground_traffic if ground_traffic > 1e-12 else 0.0
+                ),
+                avg_haps_latency_ms=haps_lat_num / haps_traffic if haps_traffic > 1e-12 else 0.0,
+                pct_crossing_backhaul=100.0 * crossed / served_all if served_all > 1e-12 else 0.0,
+                backhaul_links_over_80pct=bh_over80,
             ),
         )
