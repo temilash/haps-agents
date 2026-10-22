@@ -1,0 +1,10 @@
+h3>=4,<5
+numpy
+pandas
+networkx
+shapely
+rasterio
+pyarrow
+pyyaml
+pydantic
+pytest

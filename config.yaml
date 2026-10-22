@@ -1,0 +1,52 @@
+grid:
+  h3_resolution: 5
+  cells_path: data/processed/cells.parquet
+  boundary_path: data/raw/england.geojson
+  population_path: data/raw/population.tif
+
+demand:
+  trough_hour: 4.0
+  peak_hour: 20.0
+  active_fraction_trough: 0.02
+  active_fraction_peak: 0.15
+  critical_user_share: 0.05
+  critical_mbps_per_user: 0.1
+  general_user_share: 0.95
+  general_mbps_per_user: 2.0
+  ground_overprovision: 1.3
+
+network:
+  haps_coverage_km: 50
+  haps_access_mbps: 5000
+  isl_range_km: 250
+  isl_mbps: 10000
+  feeder_range_km: 150
+  feeder_mbps: 10000
+
+latency:
+  ground_latency_ms: 20
+  haps_base_ms: 20
+  per_haps_ms: 3
+  speed_km_per_ms: 300
+
+haps:
+  - id: H1
+    lat: 53.4808
+    lon: -2.2426   # Manchester
+  - id: H2
+    lat: 53.8008
+    lon: -1.5491   # Leeds
+  - id: H3
+    lat: 54.9783
+    lon: -1.6178   # Newcastle
+  - id: H4
+    lat: 54.895
+    lon: -2.932    # Carlisle
+
+gateways:
+  - id: GW-1
+    lat: 53.8008
+    lon: -1.5491   # Leeds
+  - id: GW-2
+    lat: 53.7632
+    lon: -2.7031   # Preston
