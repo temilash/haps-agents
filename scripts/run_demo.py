@@ -11,11 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sim.config import load_config  # noqa: E402
 from sim.engine import Simulation  # noqa: E402
-
-RURAL = (54.45, -2.10)
-STEVENAGE = (51.90, -0.20)  # London-north corridor
+from sim.region import DEFAULT_REGION, Region, load_region, region_config  # noqa: E402
 
 
 def print_tick(title: str, result, elapsed_s: float) -> None:
@@ -50,36 +47,43 @@ def run_named(sim: Simulation, sim_time: str, title: str) -> None:
     print_tick(title, result, time.perf_counter() - t0)
 
 
-def run_simple(cfg) -> None:
-    sim = Simulation(config=cfg)
+def run_simple(cfg, region: Region) -> None:
+    sim = Simulation(config=cfg, region=region)
     run_named(sim, "12:00", "12:00 normal")
     run_named(sim, "20:00", "20:00 normal")
-    sim.set_tower_status(54.89, -2.93, 30.0, 0.1)
-    run_named(sim, "20:00", "20:00 Carlisle towers at 0.1")
+    o = region.spec.demo.simple_outage
+    if o is not None:
+        sim.set_tower_status(o.lat, o.lon, o.radius_km, o.tower_status)
+        run_named(sim, "20:00", f"20:00 {o.name} towers at {o.tower_status}")
 
 
-def run_mesh(cfg) -> None:
+def run_mesh(cfg, region: Region) -> None:
     t0 = time.perf_counter()
-    sim = Simulation(config=cfg)
+    sim = Simulation(config=cfg, region=region)
     print(f"startup_s (incl. backhaul calibration or cache load): {time.perf_counter() - t0:.3f}")
     run_named(sim, "20:00", "20:00 normal")
-    for (lat, lon), name in ((RURAL, "rural"), (STEVENAGE, "Stevenage")):
-        sim = Simulation(config=cfg)
-        sim.set_tower_status(lat, lon, 15.0, 0.1)
-        run_named(sim, "20:00", f"20:00 {name} outage ({lat}, {lon}), 15 km at 0.1")
+    for o in region.spec.demo.outages:
+        sim = Simulation(config=cfg, region=region)
+        sim.set_tower_status(o.lat, o.lon, o.radius_km, o.tower_status)
+        run_named(
+            sim, "20:00",
+            f"20:00 {o.name} outage ({o.lat}, {o.lon}), {o.radius_km:g} km at {o.tower_status}",
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ground-model", choices=["simple", "mesh"], help="override config.yaml")
+    parser.add_argument("--region", default=DEFAULT_REGION)
+    parser.add_argument("--ground-model", choices=["simple", "mesh"], help="override config")
     args = parser.parse_args()
-    cfg = load_config(ROOT / "config.yaml")
+    region = load_region(args.region)
+    cfg = region_config(region)
     if args.ground_model:
         cfg.ground_model = args.ground_model
     if cfg.ground_model == "mesh":
-        run_mesh(cfg)
+        run_mesh(cfg, region)
     else:
-        run_simple(cfg)
+        run_simple(cfg, region)
 
 
 if __name__ == "__main__":

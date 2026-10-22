@@ -6,18 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from sim.config import AppConfig, load_config
+from sim.config import AppConfig
 from sim.engine import Simulation
-from sim.grid import synthetic_cells
+from sim.region import load_region, region_config
 
-ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = Path(__file__).parent / "data" / "simple_golden.json.gz"
 RURAL = (54.45, -2.10)
 STEVENAGE = (51.90, -0.20)
 
 
 def _config(model: str | None) -> AppConfig:
-    cfg = load_config(ROOT / "config.yaml")
+    cfg = region_config(load_region("england"))
+    # The flat mesh and the golden snapshot use the original single demand curve.
+    cfg.demand_model = "single"
     if model is not None:
         cfg.ground_model = model
     return cfg
@@ -31,7 +32,7 @@ def project(tmp_path_factory) -> Path:
 
 def _sim(project: Path, model: str | None = "mesh", outage=None) -> Simulation:
     cfg = _config(model)
-    sim = Simulation(config=cfg, cells=synthetic_cells(cfg.grid.h3_resolution), project_root=project)
+    sim = Simulation(config=cfg, region="england", project_root=project)
     if outage is not None:
         sim.set_tower_status(*outage, 15.0, 0.1)
     return sim
@@ -91,14 +92,14 @@ def test_flow_never_exceeds_capacity(normal, rural, stevenage, project):
 
 
 def test_backhaul_calibration_is_cached(project, normal):
-    path = project / "data/processed/backhaul.parquet"
+    path = project / "data/processed/england/backhaul.parquet"
     assert path.exists()
     mtime = path.stat().st_mtime_ns
     _sim(project)
     assert path.stat().st_mtime_ns == mtime
     cfg = _config("mesh")
     cfg.mesh.backhaul_min_mbps = 700
-    Simulation(config=cfg, cells=synthetic_cells(cfg.grid.h3_resolution), project_root=project)
+    Simulation(config=cfg, region="england", project_root=project)
     assert path.stat().st_mtime_ns != mtime
     # Leave the default calibration in place for the rest of the module.
     _sim(project)
@@ -148,4 +149,4 @@ def test_simple_model_unchanged(tmp_path, model):
     actual["20:00 carlisle"] = sim.step("20:00").to_dict()
     for key in golden:
         _assert_matches(_split_invariant(golden[key]), _split_invariant(actual[key]), key)
-    assert not (tmp_path / "data/processed/backhaul.parquet").exists()
+    assert not (tmp_path / "data/processed/england/backhaul.parquet").exists()

@@ -21,6 +21,20 @@ class Haps:
     id: str
     lat: float
     lon: float
+    target_lat: float | None = None  # None: hold position
+    target_lon: float | None = None
+    speed_kmh: float = 100.0
+    battery_pct: float = 80.0
+    battery_floor_pct: float = 25.0
+    power_mode: str = "normal"  # normal | low
+    role: str = "serve"
+
+    def __post_init__(self) -> None:
+        if self.target_lat is None or self.target_lon is None:
+            self.target_lat, self.target_lon = self.lat, self.lon
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -28,6 +42,7 @@ class Gateway:
     id: str
     lat: float
     lon: float
+    status: float = 1.0  # health: 1 up, 0 down; scales its feeder links
 
 
 @dataclass
@@ -86,11 +101,15 @@ class TickResult:
     totals: Totals = field(
         default_factory=lambda: Totals(0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
     )
+    sim_minutes: float = 0.0  # since 00:00 on day 0
+    haps: list[Haps] = field(default_factory=list)  # state at the end of the tick
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "sim_time": self.sim_time,
+            "sim_minutes": self.sim_minutes,
             "cells": [c.to_dict() for c in self.cells],
             "links": [link.to_dict() for link in self.links],
             "totals": self.totals.to_dict(),
+            "haps": [h.to_dict() for h in self.haps],
         }

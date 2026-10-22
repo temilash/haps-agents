@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 .mypy_cache/
+
+# Population rasters are large; keep them out of git.
+regions/*/population.tif

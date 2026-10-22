@@ -1,10 +1,11 @@
-ground_model: simple   # simple | mesh
+ground_model: simple       # simple | mesh
+demand_model: area_types   # area_types | single (one curve, ground sized for 20:00)
+controller: static         # static | greedy
 
+# Defaults shared by every region. A region's regions/<name>/region.yaml can
+# override any of these; its assets.yaml supplies HAPS and gateway positions.
 grid:
   h3_resolution: 5
-  cells_path: data/processed/cells.parquet
-  boundary_path: data/raw/england.geojson
-  population_path: data/raw/population.tif
 
 demand:
   trough_hour: 4.0
@@ -24,6 +25,7 @@ network:
   isl_mbps: 10000
   feeder_range_km: 150
   feeder_mbps: 10000
+  haps_count: 4        # HAPS placed automatically when a region has no assets.yaml
 
 latency:
   ground_latency_ms: 20
@@ -37,29 +39,73 @@ mesh:
   backhaul_headroom: 1.5
   backhaul_min_mbps: 500
   transit_affected_by_outage: true
-  backhaul_path: data/processed/backhaul.parquet
   ground_base_ms: 10
   per_backhaul_hop_ms: 0.5
   latency_top_endpoints: 10
+  # Hubs, used when the region has no backbone.yaml.
+  hub_count: null            # null: clamp(round(area_km2 / 10000), 4, 20)
+  hub_min_separation_km: 40
+  hub_radius_km: 10
+  big_hub_radius_km: 25      # the single biggest hub
+  hub_degree: 3              # links to the nearest hubs
+  big_hub_count: 4           # the biggest hubs are all linked to each other
+  # Neighbour links: full keeps every H3 neighbour; pruned keeps a tree to
+  # the hubs plus a few extra links depending on density.
+  mesh_mode: pruned
+  urban_share: 0.10          # top 10% of cells by population
+  suburban_share: 0.30       # the next 30%
+  suburban_extra_links: 2
+  rural_extra_links: 1
+  # A ground link counts as down for reporting below this share of nominal.
+  isolation_threshold: 0.2
+  routing_algorithm: mincost # mincost | maxflow
 
-haps:
-  - id: H1
-    lat: 53.4808
-    lon: -2.2426   # Manchester
-  - id: H2
-    lat: 53.8008
-    lon: -1.5491   # Leeds
-  - id: H3
-    lat: 54.9783
-    lon: -1.6178   # Newcastle
-  - id: H4
-    lat: 54.895
-    lon: -2.932    # Carlisle
+# demand_model: area_types
+traffic:
+  day_type: weekday        # weekday | weekend
+  city_centre_share: 0.05  # within a hub radius and in the top 5% by density
+  nightlife_share: 0.15    # within a hub radius, top 5-15%
+  suburban_share: 0.40     # top 40%, or within suburban_radius_factor * hub radius
+  suburban_radius_factor: 2.0
+  # Active fraction of the population at each hour 00:00..23:00.
+  curves:
+    city_centre: [0.04, 0.03, 0.03, 0.03, 0.03, 0.04, 0.06, 0.10, 0.16, 0.20, 0.20, 0.20,
+                  0.23, 0.22, 0.20, 0.20, 0.19, 0.15, 0.10, 0.08, 0.07, 0.06, 0.05, 0.04]
+    nightlife:   [0.18, 0.12, 0.06, 0.03, 0.02, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08,
+                  0.09, 0.09, 0.08, 0.08, 0.09, 0.11, 0.14, 0.17, 0.20, 0.22, 0.22, 0.21]
+    suburban:    [0.05, 0.03, 0.02, 0.02, 0.02, 0.03, 0.06, 0.12, 0.12, 0.08, 0.06, 0.06,
+                  0.06, 0.06, 0.06, 0.07, 0.09, 0.11, 0.13, 0.17, 0.19, 0.19, 0.16, 0.10]
+    rural:       [0.03, 0.02, 0.015, 0.015, 0.015, 0.02, 0.04, 0.06, 0.07, 0.07, 0.07, 0.07,
+                  0.07, 0.07, 0.07, 0.07, 0.08, 0.09, 0.10, 0.11, 0.11, 0.10, 0.07, 0.05]
+  normalise_to_single_curve: true   # same weekday total as the single curve
+  weekend:
+    shift_hours: 1.0
+    business_scale: 0.6    # city_centre business peak cut by 40%
+    business_start_hour: 8
+    business_end_hour: 18
+  seed: 0
+  time_shift_minutes: 30   # per cell, up to +/-
+  amplitude_jitter: 0.10   # per cell, up to +/-
+  ground_headroom: {city_centre: 1.2, nightlife: 1.1, suburban: 1.0, rural: 0.7}
+  capacity_jitter: 0.10    # ground capacity * U(0.9, 1.1)
 
-gateways:
-  - id: GW-1
-    lat: 53.8008
-    lon: -1.5491   # Leeds
-  - id: GW-2
-    lat: 53.7632
-    lon: -2.7031   # Preston
+dynamics:
+  tick_minutes: 10
+  speed_kmh: 100
+  battery_start_pct: 80
+  battery_floor_pct: 25
+  low_power_exit_margin_pct: 10   # automatic low power ends at floor + 10%
+  base_drain_pct_per_hour: 2.0
+  serving_drain_pct_per_hour: 1.0 # at full use of access capacity
+  travel_drain_pct_per_km: 0.02
+  solar_charge_pct_per_hour: 6.0
+  sunrise_hour: 7.5
+  sunset_hour: 17.5
+  low_power_access_factor: 0.5
+  low_power_serving_factor: 0.5
+
+greedy:
+  interval_minutes: 30
+  horizon_minutes: 60
+  hysteresis: 0.15
+  battery_margin_pct: 5

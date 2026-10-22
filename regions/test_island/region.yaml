@@ -1,0 +1,7 @@
+name: test_island
+h3_resolution: 5
+# A ~200 x 200 km square with no population raster: population is synthetic,
+# with cluster centres seeded from the region name.
+boundary: boundary.geojson
+population: population.tif
+overrides: {}

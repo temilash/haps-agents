@@ -1,0 +1,36 @@
+name: england
+h3_resolution: 5
+# Paths are relative to this folder. With no population.tif, a synthetic
+# population is built from `synthetic` below.
+boundary: boundary.geojson
+population: population.tif
+
+# Any config.yaml value can be overridden here, e.g.
+# overrides:
+#   network: {haps_coverage_km: 60}
+overrides: {}
+
+synthetic:
+  sigma_km: 30
+  cities:
+    - {name: London, lat: 51.5074, lon: -0.1278, population: 9000000}
+    - {name: Birmingham, lat: 52.4862, lon: -1.8904, population: 1140000}
+    - {name: Manchester, lat: 53.4808, lon: -2.2426, population: 550000}
+    - {name: Leeds, lat: 53.8008, lon: -1.5491, population: 790000}
+    - {name: Liverpool, lat: 53.4084, lon: -2.9916, population: 500000}
+    - {name: Newcastle, lat: 54.9783, lon: -1.6178, population: 300000}
+    - {name: Sheffield, lat: 53.3811, lon: -1.4701, population: 580000}
+    - {name: Bristol, lat: 51.4545, lon: -2.5879, population: 470000}
+    - {name: Nottingham, lat: 52.9548, lon: -1.1581, population: 330000}
+    - {name: Leicester, lat: 52.6369, lon: -1.1398, population: 370000}
+    - {name: Southampton, lat: 50.9097, lon: -1.4044, population: 250000}
+    - {name: Plymouth, lat: 50.3755, lon: -4.1427, population: 260000}
+    - {name: Norwich, lat: 52.6309, lon: 1.2974, population: 140000}
+    - {name: Carlisle, lat: 54.892, lon: -2.932, population: 75000}
+    - {name: Hull, lat: 53.7676, lon: -0.3274, population: 260000}
+
+# Locations used by scripts/run_demo.py.
+demo:
+  simple_outage: {name: Carlisle, lat: 54.89, lon: -2.93, radius_km: 30, tower_status: 0.1}
+  outages:
+    - {name: Stevenage, lat: 51.90, lon: -0.20}

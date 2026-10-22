@@ -8,18 +8,18 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import h3
 import networkx as nx
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from sim.config import DemandConfig, MeshConfig
+from sim.endpoints import endpoint_capacities
 from sim.grid import haversine_km
 from sim.network import FlowKey, Residuals
 from sim.state import Cell, Gateway
+from sim.topology import Pair
 
-Pair = tuple[str, str]
 # Network simplex wants integers: capacities go in as whole bps.
 BPS_PER_MBPS = 1_000_000
 # Link costs are in millimetres plus a fixed sub-metre tie-break per link. The
@@ -34,36 +34,10 @@ CACHE_KEY_FIELD = b"calibration_key"
 CALIBRATION_VERSION = 2
 
 
-def neighbour_pairs(cells: list[Cell]) -> dict[Pair, float]:
-    """Undirected H3-neighbour pairs (a < b) within the grid, with distance in km."""
-    by_id = {c.cell_id: c for c in cells}
-    pairs: dict[Pair, float] = {}
-    for c in cells:
-        for nb in h3.grid_ring(c.cell_id, 1):
-            if nb in by_id and c.cell_id < nb:
-                o = by_id[nb]
-                pairs[(c.cell_id, nb)] = haversine_km(c.lat, c.lon, o.lat, o.lon)
-    return pairs
-
-
 def link_cost(a: str, b: str, km: float) -> int:
     lo, hi = sorted((a, b))
     tie = int(hashlib.sha1(f"{lo}{hi}".encode()).hexdigest()[:8], 16) % TIE_BREAK_MAX
     return int(round(km * 1000)) * TIE_BREAK_MAX + tie
-
-
-def endpoint_weights(cells: list[Cell], exponent: float) -> dict[str, float]:
-    raw = {c.cell_id: max(0.0, c.population) ** exponent for c in cells}
-    total = sum(raw.values())
-    if total <= 0.0:
-        return {cid: 1.0 / len(raw) for cid in raw} if raw else {}
-    return {cid: w / total for cid, w in raw.items()}
-
-
-def endpoint_capacities(
-    weights: dict[str, float], total_demand_mbps: float, headroom: float
-) -> dict[str, float]:
-    return {cid: w * total_demand_mbps * headroom for cid, w in weights.items()}
 
 
 def gateway_cells(gateways: list[Gateway], cells: list[Cell]) -> dict[str, str]:

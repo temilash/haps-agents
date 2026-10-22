@@ -1,0 +1,9 @@
+haps:
+  - {id: H1, lat: 53.4808, lon: -2.2426}   # Manchester
+  - {id: H2, lat: 53.8008, lon: -1.5491}   # Leeds
+  - {id: H3, lat: 54.9783, lon: -1.6178}   # Newcastle
+  - {id: H4, lat: 54.895, lon: -2.932}     # Carlisle
+
+gateways:
+  - {id: GW-1, lat: 53.8008, lon: -1.5491}   # Leeds
+  - {id: GW-2, lat: 53.7632, lon: -2.7031}   # Preston

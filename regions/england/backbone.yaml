@@ -1,0 +1,49 @@
+# City hubs (points of presence) and the long-haul links between them,
+# roughly following the main fibre / motorway corridors. Hubs without
+# radius_km use mesh.hub_radius_km.
+hubs:
+  London: {lat: 51.507, lon: -0.128, radius_km: 25}
+  Birmingham: {lat: 52.486, lon: -1.890, radius_km: 15}
+  Manchester: {lat: 53.480, lon: -2.242, radius_km: 15}
+  Leeds: {lat: 53.801, lon: -1.549, radius_km: 12}
+  Liverpool: {lat: 53.408, lon: -2.992}
+  Sheffield: {lat: 53.381, lon: -1.470}
+  Newcastle: {lat: 54.978, lon: -1.618}
+  Bristol: {lat: 51.455, lon: -2.588}
+  Nottingham: {lat: 52.955, lon: -1.158}
+  Leicester: {lat: 52.637, lon: -1.140}
+  Southampton: {lat: 50.910, lon: -1.404}
+  Plymouth: {lat: 50.376, lon: -4.143}
+  Norwich: {lat: 52.631, lon: 1.297}
+  Hull: {lat: 53.768, lon: -0.327}
+
+links:
+  # London spokes (direct long-haul routes)
+  - [London, Birmingham]
+  - [London, Manchester]
+  - [London, Leeds]
+  - [London, Bristol]
+  - [London, Southampton]
+  - [London, Leicester]
+  - [London, Norwich]
+  # Midlands
+  - [Birmingham, Manchester]
+  - [Birmingham, Bristol]
+  - [Birmingham, Leicester]
+  - [Birmingham, Nottingham]
+  - [Leicester, Nottingham]
+  - [Leicester, Norwich]
+  # North
+  - [Nottingham, Sheffield]
+  - [Sheffield, Leeds]
+  - [Sheffield, Manchester]
+  - [Manchester, Liverpool]
+  - [Manchester, Leeds]
+  - [Liverpool, Birmingham]
+  - [Leeds, Newcastle]
+  - [Leeds, Hull]
+  - [Hull, Sheffield]
+  # South West
+  - [Bristol, Plymouth]
+  - [Bristol, Southampton]
+  - [Southampton, Plymouth]
