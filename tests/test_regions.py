@@ -62,3 +62,78 @@ def test_simulation_runs_on_test_island(tmp_path: Path):
     result = sim.step("20:00")
     assert len(result.cells) == len(sim.cells)
     assert 0.0 < result.totals.pct_served <= 100.0
+
+
+# --- boundary-driven grid ---------------------------------------------------------
+
+
+def test_missing_boundary_explains_where_to_get_it(tmp_path: Path):
+    import pytest
+
+    regions = _copy_region(tmp_path, "test_island")
+    (regions / "test_island" / "boundary.geojson").unlink()
+    with pytest.raises(FileNotFoundError, match="Countries Boundaries UK BUC"):
+        load_or_build_cells(load_region("test_island", regions), tmp_path)
+
+
+def test_england_feature_is_picked_from_uk_file():
+    import pytest
+
+    region = load_region("england")
+    england = load_boundary(region.boundary_path, "England", "CTRY23NM")
+    wales = load_boundary(region.boundary_path, "Wales", None)  # any *NM property
+    assert england.contains(Point(-0.13, 51.51)) and not england.contains(Point(-3.18, 51.48))
+    assert wales.contains(Point(-3.18, 51.48))
+    with pytest.raises(ValueError, match="England"):
+        load_boundary(region.boundary_path, "Atlantis", None)
+
+
+def test_england_grid_is_inside_the_boundary(tmp_path: Path):
+    region = load_region("england")
+    df = load_or_build_cells(region, tmp_path)
+    boundary = load_boundary(region.boundary_path, "England", "CTRY23NM")
+    assert all(boundary.contains(Point(lon, lat)) for lat, lon in zip(df.lat, df.lon))
+    ids = set(df.cell_id)
+    for lat, lon in [(54.5, 1.0), (54.0, -4.0), (50.3, -1.5), (55.95, -3.19), (51.48, -3.18)]:
+        assert h3.latlng_to_cell(lat, lon, 5) not in ids  # seas, Edinburgh, Cardiff
+    area = sum(h3.cell_area(c, unit="km^2") for c in df.cell_id)
+    assert 120_000 < area < 140_000  # England is ~130,600 km2
+    total = sum(c.population for c in region.spec.synthetic.cities)
+    assert df.population.sum() == pytest_approx(total)
+
+
+def pytest_approx(x):
+    import pytest
+
+    return pytest.approx(x, rel=1e-9)
+
+
+def test_population_raster_is_clipped_to_the_boundary(tmp_path: Path):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    regions = _copy_region(tmp_path, "test_island")
+    region = load_region("test_island", regions)
+    boundary = load_boundary(region.boundary_path)
+    # 100 people per 0.05-degree pixel, over the island and a sea margin.
+    min_lon, min_lat, max_lon, max_lat = boundary.bounds
+    step = 0.05
+    west, north = min_lon - 1.0, max_lat + 1.0
+    cols = int(round((max_lon + 1.0 - west) / step))
+    rows = int(round((north - (min_lat - 1.0)) / step))
+    with rasterio.open(
+        region.population_path, "w", driver="GTiff", height=rows, width=cols, count=1,
+        dtype="float32", crs="EPSG:4326", transform=from_origin(west, north, step, step), nodata=-1,
+    ) as dst:
+        dst.write(np.full((1, rows, cols), 100.0, dtype="float32"))
+
+    inside = sum(
+        boundary.contains(Point(west + (c + 0.5) * step, north - (r + 0.5) * step))
+        for r in range(rows)
+        for c in range(cols)
+    )
+    df = load_or_build_cells(region, tmp_path)
+    assert inside < rows * cols  # the raster really does reach into the sea
+    assert df.population.sum() == pytest_approx(100.0 * inside)
+    assert all(boundary.contains(Point(lon, lat)) for lat, lon in zip(df.lat, df.lon))

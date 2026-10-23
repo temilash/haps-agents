@@ -220,6 +220,7 @@ def test_greedy_ignores_overflow_out_of_gateway_reach(root):
             **_england().model_dump(),
             "haps": [{"id": "H1", "lat": 53.48, "lon": -2.24}],
             "gateways": [{"id": "GW-1", "lat": 53.80, "lon": -1.55}],
+            "fleet": {"count": None},  # just the one listed HAPS
         }
     )
     cfg.traffic.ground_headroom = dict.fromkeys(cfg.traffic.ground_headroom, 2.0)

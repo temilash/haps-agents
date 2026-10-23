@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HAPS Replay</title>
+<title>HAPS Simulator</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -24,54 +24,108 @@
   #app { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: auto 1fr; height: 100vh; }
   #controls { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
     padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .group { display: contents; }
+  .group[hidden] { display: none; }
   #controls label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
-  select, button { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  select, button, input[type=number] { background: var(--bg); color: var(--text); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font: inherit; }
-  button { cursor: pointer; min-width: 72px; }
+  input[type=number] { width: 64px; }
+  button { cursor: pointer; min-width: 40px; }
   button:hover, select:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; min-width: 64px; }
   #slider { flex: 1 1 200px; accent-color: var(--accent); }
-  #clock { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 48px; }
-  #map { min-height: 0; background: var(--bg); }
+  .clock { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 48px; }
+  .muted { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #map-wrap { position: relative; min-height: 0; }
+  #map { position: absolute; inset: 0; background: var(--bg); }
+  #map.tool-active { cursor: crosshair; }
+  #tool-banner { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000;
+    background: var(--accent); color: #0b0d10; padding: 6px 12px; border-radius: 6px; font-weight: 600;
+    font-size: 13px; pointer-events: none; white-space: nowrap; }
+  #tool-banner[hidden] { display: none; }
   #panel { overflow-y: auto; padding: 14px 16px; background: var(--panel); border-left: 1px solid var(--line); }
   #panel h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
     color: var(--muted); margin: 14px 0 6px; }
   #panel h2:first-child { margin-top: 0; }
-  .stat { display: flex; justify-content: space-between; padding: 3px 0;
-    font-variant-numeric: tabular-nums; }
+  .stat { display: flex; justify-content: space-between; padding: 3px 0; font-variant-numeric: tabular-nums; }
   .stat span:first-child { color: var(--muted); }
   .big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .haps-row { display: grid; grid-template-columns: 34px 1fr 54px; gap: 8px; align-items: center; padding: 4px 0; }
+  .haps-row { display: grid; grid-template-columns: 44px 1fr 64px; gap: 8px; align-items: center; padding: 4px 0; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar > div { height: 100%; background: var(--accent); }
   .mode-low { color: var(--warn); }
+  .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .row .val { min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+  .check { display: flex; gap: 8px; align-items: center; margin: 8px 0; cursor: pointer; }
   #legend { background: rgba(17,20,24,.88); color: var(--text); padding: 8px 10px; border-radius: 6px;
     font-size: 12px; min-width: 170px; }
   #legend .ramp { height: 10px; border-radius: 2px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; color: var(--muted); }
+  #legend .iso { margin-top: 6px; display: flex; gap: 6px; align-items: center; color: var(--muted); }
+  #legend .iso i { width: 12px; height: 10px; border: 2px solid var(--bad); display: inline-block; }
   .hub-label { color: #c9d1dc; font-size: 11px; white-space: nowrap; text-shadow: 0 0 3px #000, 0 0 3px #000; }
-  .gw { width: 10px; height: 10px; background: #fff; border: 2px solid #111; }
+  .gw { width: 12px; height: 12px; background: #fff; border: 2px solid #111; }
+  .gw.off { background: #555; border-color: var(--bad); }
   .haps { width: 14px; height: 14px; background: var(--accent); border: 2px solid #fff; transform: rotate(45deg); }
   .haps.low { background: var(--warn); }
   .haps-label { color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap;
     text-shadow: 0 0 3px #000, 0 0 3px #000; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
+  .leaflet-popup-content { margin: 10px 12px; }
+  .pop-actions { display: flex; gap: 6px; margin-top: 8px; }
+  #toasts { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2000;
+    display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
+  .toast { background: #3a1c1c; border: 1px solid var(--bad); color: var(--text); padding: 8px 12px;
+    border-radius: 6px; max-width: min(90vw, 520px); box-shadow: 0 4px 16px rgba(0,0,0,.4); }
   #error { color: var(--bad); }
+  [data-live-only][hidden], [data-replay-only][hidden] { display: none !important; }
   @media (max-width: 760px) {
     #app { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; height: auto; }
     #panel { border-left: 0; border-top: 1px solid var(--line); }
-    #controls { padding: 8px 16px; }
   }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="controls">
-    <label>Run <select id="run"></select></label>
-    <button id="play" type="button">Play</button>
-    <label>Speed
-      <select id="speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select>
-    </label>
-    <span id="clock">--:--</span>
-    <input id="slider" type="range" min="0" max="0" value="0" aria-label="Time">
+    <div class="seg" role="group" aria-label="Mode">
+      <button id="mode-replay" type="button">Replay</button>
+      <button id="mode-live" type="button">Live</button>
+    </div>
+
+    <div class="group" id="replay-controls" data-replay-only>
+      <label>Run <select id="run"></select></label>
+      <button id="play" type="button">Play</button>
+      <label>Speed
+        <select id="speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select>
+      </label>
+      <span class="clock" id="clock">--:--</span>
+      <input id="slider" type="range" min="0" max="0" value="0" aria-label="Time">
+    </div>
+
+    <div class="group" id="live-controls" data-live-only hidden>
+      <label>Region <select id="l-region"></select></label>
+      <label>Controller
+        <select id="l-controller"><option value="static">static</option><option value="greedy">greedy</option></select>
+      </label>
+      <label>HAPS <input id="l-count" type="number" min="0" max="100" value="6"></label>
+      <button id="l-reset" type="button">Reset</button>
+      <button id="l-play" type="button">Play</button>
+      <button id="l-step" type="button">Step</button>
+      <label>Speed
+        <select id="l-speed">
+          <option value="0.5">0.5 t/s</option><option value="1" selected>1 t/s</option>
+          <option value="2">2 t/s</option><option value="5">5 t/s</option>
+        </select>
+      </label>
+      <span class="clock" id="l-clock">--:--</span>
+      <span class="muted" id="l-tick">– ms</span>
+    </div>
+
     <label>Colour by
       <select id="metric">
         <option value="demand">Demand</option>
@@ -80,26 +134,53 @@
       </select>
     </label>
   </div>
-  <div id="map"></div>
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="tool-banner" hidden></div>
+  </div>
   <div id="panel">
     <h2>Sim time</h2>
     <div class="big" id="p-time">--:--</div>
+    <div class="muted" data-live-only hidden>tick <span id="p-tick">–</span></div>
     <h2>Service</h2>
     <div class="stat"><span>% served</span><span id="p-served">–</span></div>
     <div class="stat"><span>% critical served</span><span id="p-crit">–</span></div>
     <div class="stat"><span>Unserved critical</span><span id="p-uc">–</span></div>
     <div class="stat"><span>Unserved general</span><span id="p-ug">–</span></div>
     <div class="stat"><span>Demand</span><span id="p-demand">–</span></div>
-    <h2>HAPS</h2>
+    <div class="stat"><span>Isolated cells</span><span id="p-iso">–</span></div>
+
+    <div data-live-only hidden>
+      <h2>Tools <span class="muted">(Esc: pan)</span></h2>
+      <div class="tools">
+        <button type="button" data-tool="pan">Pan</button>
+        <button type="button" data-tool="haps">Add HAPS here</button>
+        <button type="button" data-tool="gateway">Add gateway</button>
+        <button type="button" data-tool="outage">Outage</button>
+      </div>
+      <div class="row"><span class="muted">Radius</span>
+        <input id="o-radius" type="range" min="5" max="100" step="5" value="15"><span class="val" id="o-radius-v">15 km</span></div>
+      <div class="row"><span class="muted">Towers</span>
+        <input id="o-status" type="range" min="0" max="1" step="0.05" value="0.1"><span class="val" id="o-status-v">0.10</span></div>
+      <div class="row"><button id="o-clear" type="button">Clear outages</button></div>
+      <label class="check"><input id="subsea" type="checkbox"> Cut subsea cables</label>
+    </div>
+
+    <h2>HAPS
+      <span data-live-only hidden>
+        <button id="h-add" type="button" title="Add a HAPS (auto-placed)">+</button>
+        <button id="h-remove" type="button" title="Remove the highest-numbered HAPS">−</button>
+      </span>
+    </h2>
     <div id="p-haps"></div>
     <div id="error"></div>
   </div>
 </div>
+<div id="toasts" aria-live="polite"></div>
 <script>
 "use strict";
 const params = new URLSearchParams(location.search);
-const REGION = params.get("region") || "england";
-const BASE = `data/${REGION}`;
+const $ = id => document.getElementById(id);
 
 // Sequential ramp (dark to bright), readable on the dark basemap.
 const RAMP = ["#1b2a49", "#24497a", "#2a6f97", "#2c9c95", "#5cc46a", "#c9de45", "#fde725"];
@@ -108,6 +189,7 @@ const METRICS = {
   overflow: { idx: 1, label: "Overflow (Mbps, log)", log: true, min: 1, max: 1e4 },
   served:   { idx: 2, label: "% served", log: false, min: 50, max: 100, reverse: true },
 };
+const ISOLATED_STROKE = "#eb5757";
 
 function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
 const RAMP_RGB = RAMP.map(hexToRgb);
@@ -126,11 +208,23 @@ function metricT(m, v) {
   return m.reverse ? 1 - t : t;
 }
 function fmtMbps(v) {
+  if (v == null) return "–";
   if (v >= 1e6) return (v / 1e6).toFixed(2) + " Tbps";
   if (v >= 1e3) return (v / 1e3).toFixed(1) + " Gbps";
   return v.toFixed(1) + " Mbps";
 }
 function linkColor(u) { return u > 0.8 ? "#eb5757" : u >= 0.5 ? "#f2c94c" : "#4c9be8"; }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function toast(msg) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
+// --- map ----------------------------------------------------------------------
 
 const map = L.map("map", { preferCanvas: true, zoomControl: true, zoomSnap: 0.25 });
 // CARTO's dark tiles now return an "API key required" image without a key,
@@ -144,9 +238,30 @@ const BASEMAPS = {
 L.tileLayer(...(BASEMAPS[params.get("basemap")] || BASEMAPS.esri)).addTo(map);
 const renderer = L.canvas({ padding: 0.3 });
 
-const state = { frames: [], i: 0, playing: false, timer: null, metric: "overflow", cells: {}, static: null };
-const hapsLayer = L.layerGroup().addTo(map);
-const linkLayer = L.layerGroup().addTo(map);
+const layers = {
+  cells: null,
+  static: L.layerGroup().addTo(map),
+  outages: L.layerGroup().addTo(map),
+  links: L.layerGroup().addTo(map),
+  haps: L.layerGroup().addTo(map),
+  gateways: L.layerGroup().addTo(map),
+  preview: L.layerGroup().addTo(map),
+};
+
+const state = {
+  mode: "replay",
+  frames: [], i: 0, playing: false, timer: null,
+  metric: "overflow",
+  cells: {},                 // cell_id -> polygon layer
+  static: null,
+  frame: null,               // frame on screen
+  hapsObjs: {},              // id -> {marker, label, circle, line, dragging}
+  gwObjs: {},                // id -> {marker, dragging}
+  tool: "pan",
+  ws: null, wsRetry: null,
+  live: null,                // latest live summary
+  liveRegion: null,
+};
 
 const legend = L.control({ position: "bottomleft" });
 legend.onAdd = () => { const d = L.DomUtil.create("div"); d.id = "legend"; return d; };
@@ -156,139 +271,468 @@ function drawLegend() {
   const stops = (m.reverse ? [...RAMP].reverse() : RAMP).join(",");
   const ticks = m.log ? [m.min, Math.sqrt(m.min * m.max), m.max].map(v => v >= 1000 ? (v / 1000) + "k" : v)
                       : [m.min, (m.min + m.max) / 2, m.max];
-  document.getElementById("legend").innerHTML =
+  $("legend").innerHTML =
     `<div>${m.label}</div><div class="ramp" style="background:linear-gradient(90deg,${stops})"></div>` +
-    `<div class="ticks">${ticks.map(t => `<span>${t}</span>`).join("")}</div>`;
+    `<div class="ticks">${ticks.map(t => `<span>${t}</span>`).join("")}</div>` +
+    `<div class="iso"><i></i>isolated from the main network</div>`;
 }
 
-async function getJSON(path) {
-  const r = await fetch(`${BASE}/${path}`);
-  if (!r.ok) throw new Error(`${r.status} loading ${BASE}/${path}`);
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} loading ${url}`);
   return r.json();
 }
 
-async function loadStatic() {
-  const [cells, st] = await Promise.all([getJSON("cells.geojson"), getJSON("static.json")]);
+// Cells and static network for a region.
+function loadGeo(cells, st) {
+  if (layers.cells) map.removeLayer(layers.cells);
+  layers.static.clearLayers();
+  for (const k of Object.keys(state.hapsObjs)) removeHaps(k);
+  for (const k of Object.keys(state.gwObjs)) removeGateway(k);
+  state.cells = {};
   state.static = st;
-  const layer = L.geoJSON(cells, {
+  layers.cells = L.geoJSON(cells, {
     renderer,
     style: { weight: 0.3, color: "#0b0d10", fillOpacity: 0.75, fillColor: "#1b2a49" },
-    onEachFeature: (f, l) => { state.cells[f.properties.cell_id] = l; l.feature = f; },
+    onEachFeature: (f, l) => { state.cells[f.properties.cell_id] = l; },
   }).addTo(map);
-  layer.bindTooltip(l => {
-    const p = l.feature.properties, v = currentCell(p.cell_id);
-    const extra = v ? `<br>demand ${fmtMbps(v[0])}<br>overflow ${fmtMbps(v[1])}<br>${v[2]}% served` : "";
-    return `${p.area_type}${p.hub ? " · " + p.hub : ""}<br>pop ${p.population.toLocaleString()}${extra}`;
+  layers.cells.bindTooltip(l => {
+    const p = l.feature.properties, v = state.frame ? state.frame.cells[p.cell_id] : null;
+    const extra = v ? `<br>demand ${fmtMbps(v[0])}<br>overflow ${fmtMbps(v[1])}<br>${v[2]}% served` +
+      (v[4] ? "<br><b>isolated</b>" : "") : "";
+    return `${esc(p.area_type || "")}${p.hub ? " · " + esc(p.hub) : ""}<br>pop ${p.population.toLocaleString()}${extra}`;
   }, { sticky: true });
-  map.fitBounds(layer.getBounds(), { padding: [10, 10] });
+  // Clicks on cells bubble up to the map's click handler (the tools).
+  map.fitBounds(layers.cells.getBounds(), { padding: [10, 10] });
 
   for (const [a, b] of st.backbone) {
-    L.polyline([a, b], { color: "#9aa7b8", weight: 1, opacity: 0.35, interactive: false }).addTo(map);
+    L.polyline([a, b], { color: "#9aa7b8", weight: 1, opacity: 0.35, interactive: false }).addTo(layers.static);
+  }
+  for (const s of st.subsea || []) {
+    L.polyline([s.a, s.b], { color: "#56ccf2", weight: 1.2, opacity: 0.5, dashArray: "2 5" })
+      .bindTooltip(`subsea ${esc(s.id)}`).addTo(layers.static);
   }
   for (const h of st.hubs) {
     L.marker([h.lat, h.lon], { interactive: false,
-      icon: L.divIcon({ className: "", html: `<div class="hub-label">${h.name}</div>`, iconAnchor: [-4, 6] }) }).addTo(map);
-  }
-  for (const g of st.gateways) {
-    L.marker([g.lat, g.lon], { title: g.id,
-      icon: L.divIcon({ className: "", html: '<div class="gw"></div>', iconSize: [10, 10], iconAnchor: [5, 5] }) })
-      .bindTooltip(`Gateway ${g.id}`).addTo(map);
+      icon: L.divIcon({ className: "", html: `<div class="hub-label">${esc(h.name)}</div>`, iconAnchor: [-4, 6] }) })
+      .addTo(layers.static);
   }
 }
 
-function currentCell(id) { const f = state.frames[state.i]; return f ? f.cells[id] : null; }
+// --- rendering ------------------------------------------------------------------
 
-function render() {
-  const f = state.frames[state.i];
-  if (!f) return;
+function renderCells(f) {
   const m = METRICS[state.metric];
   for (const [id, layer] of Object.entries(state.cells)) {
     const v = f.cells[id];
     const t = v ? metricT(m, v[m.idx]) : null;
-    layer.setStyle(t === null ? { fillColor: "#151a21", fillOpacity: 0.35 } : { fillColor: rampColor(t), fillOpacity: 0.75 });
+    const iso = v && v[4];
+    layer.setStyle({
+      fillColor: t === null ? "#151a21" : rampColor(t),
+      fillOpacity: t === null ? 0.35 : 0.75,
+      color: iso ? ISOLATED_STROKE : "#0b0d10",
+      weight: iso ? 1.6 : 0.3,
+    });
   }
+}
 
-  linkLayer.clearLayers();
-  for (const l of f.links) {
-    L.polyline([l.a, l.b], { color: linkColor(l.util), weight: l.type === "feeder" ? 2.5 : 2,
-      opacity: 0.9, interactive: true }).bindTooltip(`${l.type} · ${(100 * l.util).toFixed(0)}%`).addTo(linkLayer);
-  }
-  hapsLayer.clearLayers();
-  const km = state.static.coverage_km;
-  for (const h of f.haps) {
-    L.circle([h.lat, h.lon], { radius: km * 1000, color: "#5fb3ff", weight: 1, opacity: 0.6,
-      fillOpacity: 0.06, interactive: false }).addTo(hapsLayer);
-    if (Math.abs(h.target_lat - h.lat) + Math.abs(h.target_lon - h.lon) > 1e-3) {
-      L.polyline([[h.lat, h.lon], [h.target_lat, h.target_lon]], { color: "#5fb3ff", weight: 1.2,
-        opacity: 0.6, dashArray: "4 4", interactive: false }).addTo(hapsLayer);
+function hapsIcon(h) {
+  return L.divIcon({ className: "", iconSize: [14, 14], iconAnchor: [7, 7],
+    html: `<div class="haps ${h.mode === "low" ? "low" : ""}"></div>` });
+}
+function hapsLabel(h) {
+  return L.divIcon({ className: "", iconAnchor: [-10, 18],
+    html: `<div class="haps-label">${h.pinned ? "📌 " : ""}${esc(h.id)} ${Math.round(h.battery)}%</div>` });
+}
+function hapsPopup(h) {
+  return `<b>${esc(h.id)}</b>${h.pinned ? " 📌 pinned" : ""}<br>battery ${h.battery}% · ${esc(h.mode)}` +
+    `<div class="pop-actions">${h.pinned ? `<button data-act="unpin" data-id="${esc(h.id)}">Unpin</button>` : ""}` +
+    `<button data-act="remove-haps" data-id="${esc(h.id)}">Remove</button></div>`;
+}
+
+function removeHaps(id) {
+  const o = state.hapsObjs[id];
+  if (!o) return;
+  for (const k of ["marker", "label", "circle", "line"]) if (o[k]) o[k].remove();
+  delete state.hapsObjs[id];
+}
+
+function renderHaps(list) {
+  const live = state.mode === "live";
+  const km = state.static ? state.static.coverage_km : 50;
+  const seen = new Set();
+  for (const h of list) {
+    seen.add(h.id);
+    let o = state.hapsObjs[h.id];
+    if (!o || o.live !== live) {
+      removeHaps(h.id);
+      o = state.hapsObjs[h.id] = { live, dragging: false };
+      o.circle = L.circle([h.lat, h.lon], { radius: km * 1000, color: "#5fb3ff", weight: 1, opacity: 0.6,
+        fillOpacity: 0.06, interactive: false }).addTo(layers.haps);
+      o.line = L.polyline([], { color: "#5fb3ff", weight: 1.2, opacity: 0.6, dashArray: "4 4",
+        interactive: false }).addTo(layers.haps);
+      o.label = L.marker([h.lat, h.lon], { interactive: false, icon: hapsLabel(h) }).addTo(layers.haps);
+      o.marker = L.marker([h.lat, h.lon], { icon: hapsIcon(h), draggable: live, autoPan: true }).addTo(layers.haps);
+      if (live) {
+        o.marker.bindPopup("");
+        o.marker.on("dragstart", () => { o.dragging = true; o.marker.closePopup(); });
+        o.marker.on("dragend", async () => {
+          const p = o.marker.getLatLng();
+          o.dragging = false;
+          try { await api("POST", `/api/haps/${encodeURIComponent(h.id)}/target`, { lat: p.lat, lon: p.lng }); }
+          catch { o.marker.setLatLng([o.h.lat, o.h.lon]); }
+        });
+      } else {
+        o.marker.bindTooltip("");
+      }
     }
-    L.marker([h.lat, h.lon], { icon: L.divIcon({ className: "",
-      html: `<div class="haps ${h.mode === "low" ? "low" : ""}"></div>`, iconSize: [14, 14], iconAnchor: [7, 7] }) })
-      .bindTooltip(`${h.id} · ${h.battery}% · ${h.mode}`).addTo(hapsLayer);
-    L.marker([h.lat, h.lon], { interactive: false, icon: L.divIcon({ className: "",
-      html: `<div class="haps-label">${h.id} ${Math.round(h.battery)}%</div>`, iconAnchor: [-10, 18] }) }).addTo(hapsLayer);
+    o.h = h;
+    if (!o.dragging) o.marker.setLatLng([h.lat, h.lon]);
+    o.marker.setIcon(hapsIcon(h));
+    o.label.setLatLng([h.lat, h.lon]).setIcon(hapsLabel(h));
+    o.circle.setLatLng([h.lat, h.lon]).setRadius(km * 1000);
+    const moving = Math.abs(h.target_lat - h.lat) + Math.abs(h.target_lon - h.lon) > 1e-3;
+    o.line.setLatLngs(moving ? [[h.lat, h.lon], [h.target_lat, h.target_lon]] : []);
+    if (live) o.marker.setPopupContent(hapsPopup(h));
+    else o.marker.setTooltipContent(`${esc(h.id)} · ${h.battery}% · ${esc(h.mode)}`);
   }
+  for (const id of Object.keys(state.hapsObjs)) if (!seen.has(id)) removeHaps(id);
+}
 
+function removeGateway(id) {
+  const o = state.gwObjs[id];
+  if (o) { o.marker.remove(); delete state.gwObjs[id]; }
+}
+
+function renderGateways(list) {
+  const live = state.mode === "live";
+  const seen = new Set();
+  for (const g of list) {
+    seen.add(g.id);
+    const off = g.active === false;
+    const icon = L.divIcon({ className: "", iconSize: [12, 12], iconAnchor: [6, 6],
+      html: `<div class="gw ${off ? "off" : ""}"></div>` });
+    let o = state.gwObjs[g.id];
+    if (!o || o.live !== live) {
+      removeGateway(g.id);
+      o = state.gwObjs[g.id] = { live, dragging: false };
+      o.marker = L.marker([g.lat, g.lon], { icon, draggable: live, autoPan: true }).addTo(layers.gateways);
+      if (live) {
+        o.marker.bindPopup("");
+        o.marker.on("dragstart", () => { o.dragging = true; o.marker.closePopup(); });
+        o.marker.on("dragend", async () => {
+          const p = o.marker.getLatLng();
+          o.dragging = false;
+          try { await api("PATCH", `/api/gateways/${encodeURIComponent(g.id)}`, { lat: p.lat, lon: p.lng }); }
+          catch { o.marker.setLatLng([o.g.lat, o.g.lon]); }
+        });
+      } else {
+        o.marker.bindTooltip("");
+      }
+    }
+    o.g = g;
+    o.marker.setIcon(icon);
+    if (!o.dragging) o.marker.setLatLng([g.lat, g.lon]);
+    const text = `Gateway ${esc(g.id)}${off ? " · unusable (cut off)" : ""}`;
+    if (live) o.marker.setPopupContent(`<b>${text}</b><div class="pop-actions">` +
+      `<button data-act="remove-gw" data-id="${esc(g.id)}">Remove</button></div>`);
+    else o.marker.setTooltipContent(text);
+  }
+  for (const id of Object.keys(state.gwObjs)) if (!seen.has(id)) removeGateway(id);
+}
+
+function renderOutages(list) {
+  layers.outages.clearLayers();
+  for (const o of list || []) {
+    L.circle([o.lat, o.lon], { radius: o.radius_km * 1000, color: "#eb5757", weight: 1.5, dashArray: "6 4",
+      fillOpacity: 0.05, interactive: false }).addTo(layers.outages);
+  }
+}
+
+function renderPanel(f) {
   const t = f.totals;
-  document.getElementById("clock").textContent = f.t;
-  document.getElementById("p-time").textContent = f.t;
-  document.getElementById("p-served").textContent = t.pct_served.toFixed(3) + "%";
-  document.getElementById("p-crit").textContent = t.pct_critical_served.toFixed(3) + "%";
-  document.getElementById("p-uc").textContent = fmtMbps(t.unserved_critical_mbps);
-  document.getElementById("p-ug").textContent = fmtMbps(t.unserved_general_mbps);
-  document.getElementById("p-demand").textContent = fmtMbps(t.demand_mbps);
-  document.getElementById("p-haps").innerHTML = f.haps.map(h => `
-    <div class="haps-row"><strong>${h.id}</strong>
+  $("clock").textContent = f.t;
+  $("l-clock").textContent = f.t;
+  $("p-time").textContent = f.t;
+  $("p-served").textContent = t.pct_served.toFixed(3) + "%";
+  $("p-crit").textContent = t.pct_critical_served.toFixed(3) + "%";
+  $("p-uc").textContent = fmtMbps(t.unserved_critical_mbps);
+  $("p-ug").textContent = fmtMbps(t.unserved_general_mbps);
+  $("p-demand").textContent = fmtMbps(t.demand_mbps);
+  $("p-iso").textContent = t.isolated_cells ?? Object.values(f.cells).filter(v => v[4]).length;
+  renderHapsList(f.haps);
+}
+
+function renderHapsList(list) {
+  $("p-haps").innerHTML = list.map(h => `
+    <div class="haps-row"><strong>${h.pinned ? "📌" : ""}${esc(h.id)}</strong>
       <div class="bar" title="${h.battery}%"><div style="width:${h.battery}%;${h.mode === "low" ? "background:var(--warn)" : ""}"></div></div>
       <span class="${h.mode === "low" ? "mode-low" : ""}">${Math.round(h.battery)}% ${h.mode === "low" ? "low" : ""}</span>
-    </div>`).join("");
-  document.getElementById("slider").value = state.i;
+    </div>`).join("") || '<div class="muted">none</div>';
 }
+
+function render() {
+  const f = state.frame;
+  if (!f || !state.static) return;
+  renderCells(f);
+  layers.links.clearLayers();
+  for (const l of f.links) {
+    L.polyline([l.a, l.b], { color: linkColor(l.util), weight: l.type === "feeder" ? 2.5 : 2, opacity: 0.9 })
+      .bindTooltip(`${l.type} · ${(100 * l.util).toFixed(0)}%`).addTo(layers.links);
+  }
+  renderHaps(f.haps);
+  renderGateways(f.gateways || state.static.gateways);
+  renderOutages(f.outages);
+  renderPanel(f);
+}
+
+// --- replay ---------------------------------------------------------------------
 
 function setPlaying(on) {
   state.playing = on;
-  document.getElementById("play").textContent = on ? "Pause" : "Play";
+  $("play").textContent = on ? "Pause" : "Play";
   clearInterval(state.timer);
   if (on) {
-    const fps = Number(document.getElementById("speed").value);
+    const fps = Number($("speed").value);
     state.timer = setInterval(() => {
       if (state.i >= state.frames.length - 1) { setPlaying(false); return; }
-      state.i += 1; render();
+      state.i += 1; state.frame = state.frames[state.i]; $("slider").value = state.i; render();
     }, 1000 / fps);
   }
 }
 
 async function loadRun(runId) {
   setPlaying(false);
-  const run = await getJSON(`runs/${runId}.json`);
+  const run = await getJSON(`data/${state.replayRegion}/runs/${runId}.json`);
   state.frames = run.frames;
   state.i = Math.min(state.i, run.frames.length - 1);
-  const slider = document.getElementById("slider");
-  slider.max = run.frames.length - 1;
+  $("slider").max = run.frames.length - 1;
+  $("slider").value = state.i;
+  state.frame = state.frames[state.i];
   render();
 }
 
-async function main() {
+async function enterReplay() {
+  state.replayRegion = params.get("region") || "uk";
+  const base = `data/${state.replayRegion}`;
+  const [cells, st] = await Promise.all([getJSON(`${base}/cells.geojson`), getJSON(`${base}/static.json`)]);
+  loadGeo(cells, st);
+  const index = await getJSON(`${base}/runs/index.json`);
+  if (!index.length) throw new Error("No exported runs; see README.");
+  const sel = $("run");
+  sel.innerHTML = index.map(r =>
+    `<option value="${esc(r.run_id)}">${esc(r.controller)}${r.haps != null ? ` · ${r.haps} HAPS` : ""} · ${esc(r.run_id)}</option>`).join("");
+  const wanted = params.get("run");
+  if (wanted) sel.value = wanted;
+  const frame = Number(params.get("frame"));
+  state.i = frame || 0;
+  await loadRun(sel.value);
+}
+
+$("run").onchange = () => loadRun($("run").value);
+$("play").onclick = () => setPlaying(!state.playing);
+$("speed").onchange = () => { if (state.playing) setPlaying(true); };
+$("slider").oninput = e => { state.i = Number(e.target.value); state.frame = state.frames[state.i]; render(); };
+
+// --- live -----------------------------------------------------------------------
+
+async function api(method, path, body) {
+  let r;
   try {
-    await loadStatic();
-    drawLegend();
-    const index = await getJSON("runs/index.json");
-    const sel = document.getElementById("run");
-    sel.innerHTML = index.map(r => `<option value="${r.run_id}">${r.controller} · ${r.run_id}</option>`).join("");
-    if (!index.length) throw new Error("No exported runs; see README.");
-    const wanted = params.get("run");
-    if (wanted) sel.value = wanted;
-    sel.onchange = () => loadRun(sel.value);
-    document.getElementById("play").onclick = () => setPlaying(!state.playing);
-    document.getElementById("speed").onchange = () => { if (state.playing) setPlaying(true); };
-    document.getElementById("slider").oninput = e => { state.i = Number(e.target.value); render(); };
-    document.getElementById("metric").onchange = e => { state.metric = e.target.value; drawLegend(); render(); };
-    const frame = Number(params.get("frame"));
-    if (frame) state.i = frame;
-    await loadRun(sel.value);
-  } catch (err) {
-    document.getElementById("error").textContent = String(err.message || err);
+    r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined });
+  } catch (e) {
+    toast("Can't reach the server. Live mode needs: uvicorn api.server:app");
+    throw e;
   }
+  if (!r.ok) {
+    let msg = `${r.status} ${r.statusText}`;
+    try {
+      const d = (await r.json()).detail;
+      msg = Array.isArray(d) ? d.map(x => `${(x.loc || []).slice(1).join(".")}: ${x.msg}`).join("; ") : (d || msg);
+    } catch {}
+    toast(msg);
+    throw new Error(msg);
+  }
+  const summary = await r.json();
+  if (summary && summary.haps) applySummary(summary);
+  return summary;
+}
+
+function applySummary(s) {
+  state.live = s;
+  $("l-play").textContent = s.running ? "Pause" : "Play";
+  $("l-play").classList.toggle("on", s.running);
+  $("l-controller").value = s.controller;
+  $("l-speed").value = String(s.ticks_per_second);
+  $("subsea").checked = s.subsea_cut;
+  $("l-tick").textContent = s.tick_ms == null ? "– ms" : `${s.tick_ms} ms/tick`;
+  $("p-tick").textContent = s.tick_ms == null ? "–" : `${s.tick_ms} ms`;
+  if (state.mode !== "live") return;
+  // Show edits straight away; served traffic changes with the next tick.
+  if (state.frame) {
+    state.frame = { ...state.frame, haps: s.haps, gateways: s.gateways, outages: s.outages };
+    renderHaps(s.haps);
+    renderGateways(s.gateways);
+    renderOutages(s.outages);
+    renderHapsList(s.haps);
+  }
+}
+
+async function loadLiveRegion(region) {
+  const [cells, st] = await Promise.all([getJSON(`/api/regions/${encodeURIComponent(region)}/cells`), getJSON("/api/static")]);
+  loadGeo(cells, st);
+  state.liveRegion = region;
+}
+
+function connectWs() {
+  clearTimeout(state.wsRetry);
+  if (state.ws) state.ws.close();
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  state.ws = ws;
+  ws.onmessage = async ev => {
+    if (state.mode !== "live") return;
+    const msg = JSON.parse(ev.data);
+    if (msg.region && msg.region !== state.liveRegion) {
+      await loadLiveRegion(msg.region);
+      $("l-region").value = msg.region;
+    }
+    if (msg.type === "frame") {
+      state.frame = msg;
+      applySummary(msg);
+      render();
+    } else if (msg.type === "state") {
+      applySummary(msg);
+    }
+  };
+  ws.onclose = () => {
+    if (state.mode === "live" && state.ws === ws) state.wsRetry = setTimeout(connectWs, 2000);
+  };
+}
+
+async function enterLive() {
+  const [regions, summary] = await Promise.all([getJSON("/api/regions"), getJSON("/api/sim")]);
+  $("l-region").innerHTML = regions.map(r =>
+    `<option value="${esc(r.name)}">${esc(r.name)}${r.built ? "" : " (builds on reset)"}</option>`).join("");
+  $("l-region").value = summary.region;
+  $("l-count").value = summary.haps.length;
+  await loadLiveRegion(summary.region);
+  applySummary(summary);
+  connectWs();
+}
+
+$("l-reset").onclick = async () => {
+  const count = $("l-count").value === "" ? null : Number($("l-count").value);
+  await api("POST", "/api/sim/reset", { region: $("l-region").value, controller: $("l-controller").value, haps: count });
+};
+$("l-play").onclick = () => api("POST", state.live && state.live.running ? "/api/sim/pause" : "/api/sim/play");
+$("l-step").onclick = () => api("POST", "/api/sim/step");
+$("l-speed").onchange = () => api("POST", "/api/sim/speed", { ticks_per_second: Number($("l-speed").value) });
+$("l-controller").onchange = () => api("POST", "/api/controller", { name: $("l-controller").value });
+$("h-add").onclick = () => api("POST", "/api/haps");
+$("h-remove").onclick = () => {
+  const ids = (state.live ? state.live.haps : []).map(h => h.id);
+  if (!ids.length) return toast("No HAPS to remove");
+  const num = id => (/^H(\d+)$/.exec(id) || [0, -1])[1] * 1;
+  const last = ids.reduce((a, b) => (num(b) > num(a) ? b : a));
+  api("DELETE", `/api/haps/${encodeURIComponent(last)}`);
+};
+$("o-clear").onclick = () => api("POST", "/api/outage/clear");
+$("subsea").onchange = e => api("POST", "/api/subsea_cut", { cut: e.target.checked }).catch(() => {
+  e.target.checked = !e.target.checked;
+});
+$("o-radius").oninput = e => { $("o-radius-v").textContent = `${e.target.value} km`; };
+$("o-status").oninput = e => { $("o-status-v").textContent = Number(e.target.value).toFixed(2); };
+
+// Popup buttons (HAPS and gateways).
+map.on("popupopen", e => {
+  e.popup.getElement().querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = async () => {
+      const id = encodeURIComponent(b.dataset.id);
+      map.closePopup();
+      if (b.dataset.act === "unpin") await api("POST", `/api/haps/${id}/unpin`);
+      if (b.dataset.act === "remove-haps") await api("DELETE", `/api/haps/${id}`);
+      if (b.dataset.act === "remove-gw") await api("DELETE", `/api/gateways/${id}`);
+    };
+  });
+});
+
+// --- tools ----------------------------------------------------------------------
+
+const TOOL_TEXT = {
+  haps: "Click the map to add a HAPS · Esc to cancel",
+  gateway: "Click the map to add a gateway · Esc to cancel",
+  outage: "Click the map to place an outage · Esc to cancel",
+};
+function setTool(tool) {
+  state.tool = tool;
+  document.querySelectorAll("[data-tool]").forEach(b => b.classList.toggle("on", b.dataset.tool === tool));
+  $("map").classList.toggle("tool-active", tool !== "pan");
+  $("tool-banner").hidden = tool === "pan";
+  $("tool-banner").textContent = TOOL_TEXT[tool] || "";
+  layers.preview.clearLayers();
+}
+document.querySelectorAll("[data-tool]").forEach(b => { b.onclick = () => setTool(b.dataset.tool); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") setTool("pan"); });
+
+async function onMapClick(e) {
+  if (state.mode !== "live" || state.tool === "pan") return;
+  const p = { lat: e.latlng.lat, lon: e.latlng.lng };
+  if (state.tool === "haps") await api("POST", "/api/haps", p).catch(() => {});
+  if (state.tool === "gateway") await api("POST", "/api/gateways", p).catch(() => {});
+  if (state.tool === "outage") {
+    await api("POST", "/api/outage", { ...p, radius_km: Number($("o-radius").value),
+      tower_status: Number($("o-status").value) }).catch(() => {});
+  }
+}
+map.on("click", onMapClick);
+map.on("mousemove", e => {
+  if (state.mode !== "live" || state.tool !== "outage") return;
+  layers.preview.clearLayers();
+  L.circle(e.latlng, { radius: Number($("o-radius").value) * 1000, color: "#eb5757", weight: 1,
+    dashArray: "3 3", fillOpacity: 0.08, interactive: false }).addTo(layers.preview);
+});
+
+// --- modes ----------------------------------------------------------------------
+
+async function setMode(mode) {
+  if (mode === state.mode && state.frame) return;
+  state.mode = mode;
+  setPlaying(false);
+  setTool("pan");
+  $("mode-replay").classList.toggle("on", mode === "replay");
+  $("mode-live").classList.toggle("on", mode === "live");
+  document.querySelectorAll("[data-live-only]").forEach(el => { el.hidden = mode !== "live"; });
+  document.querySelectorAll("[data-replay-only]").forEach(el => { el.hidden = mode !== "replay"; });
+  document.title = mode === "live" ? "HAPS Live" : "HAPS Replay";
+  state.frame = null;
+  $("error").textContent = "";
+  try {
+    if (mode === "live") {
+      await enterLive();
+    } else {
+      if (state.ws) { state.ws.close(); state.ws = null; }
+      state.liveRegion = null;
+      await enterReplay();
+    }
+  } catch (err) {
+    $("error").textContent = String(err.message || err);
+    if (mode === "live") toast("Live mode needs the server: uvicorn api.server:app --reload");
+  }
+}
+$("mode-replay").onclick = () => setMode("replay");
+$("mode-live").onclick = () => setMode("live");
+$("metric").onchange = e => { state.metric = e.target.value; drawLegend(); if (state.frame) renderCells(state.frame); };
+
+async function main() {
+  drawLegend();
+  let mode = params.get("mode");
+  if (!mode) {
+    // Live when the server is there (uvicorn), replay for a plain static server.
+    try { mode = (await fetch("/api/sim")).ok ? "live" : "replay"; } catch { mode = "replay"; }
+  }
+  state.mode = null;
+  await setMode(mode === "live" ? "live" : "replay");
 }
 main();
 </script>

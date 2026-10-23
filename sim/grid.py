@@ -45,19 +45,63 @@ def _cell_table(cell_ids: list[str], population: np.ndarray) -> pd.DataFrame:
     )
 
 
-def load_boundary(path: Path):
+BOUNDARY_HELP = """\
+Region boundary not found: {path}
+
+Every region needs a boundary; the grid is built from it so no cell lies in the sea.
+For England, download the ONS "Countries (December 2023) Boundaries UK BUC" GeoJSON:
+  https://geoportal.statistics.gov.uk/  (search "Countries Boundaries UK BUC", Download > GeoJSON)
+or directly:
+  https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Countries_December_2023_Boundaries_UK_BUC/FeatureServer/0/query?where=1%3D1&outFields=*&outSR=4326&f=geojson
+Save it as {path}. It holds all four UK countries; region.yaml's
+boundary_feature_name (e.g. England) picks one."""
+
+
+def _feature_names(props: dict, name_property: str | None) -> list[str]:
+    if name_property is not None:
+        return [str(props.get(name_property))]
+    return [
+        str(v)
+        for k, v in props.items()
+        if isinstance(v, str) and (k.upper().endswith("NM") or k.lower() == "name")
+    ]
+
+
+def load_boundary(
+    path: Path,
+    feature_name: str | list[str] | None = None,
+    name_property: str | None = None,
+):
+    """The region's outline: the named feature(s) merged, or all of them for
+    None / "all"."""
+    if not path.exists():
+        raise FileNotFoundError(BOUNDARY_HELP.format(path=path))
     with path.open() as f:
         geo = json.load(f)
     if geo.get("type") == "FeatureCollection":
-        geoms = [shape(ft["geometry"]) for ft in geo["features"] if ft.get("geometry")]
-        return unary_union(geoms)
-    if geo.get("type") == "Feature":
-        return shape(geo["geometry"])
-    return shape(geo)
+        features = [ft for ft in geo["features"] if ft.get("geometry")]
+    elif geo.get("type") == "Feature":
+        features = [geo]
+    else:
+        features = [{"type": "Feature", "properties": {}, "geometry": geo}]
+    if feature_name is not None and feature_name != "all":
+        wanted = [feature_name] if isinstance(feature_name, str) else list(feature_name)
+        names = {
+            id(ft): _feature_names(ft.get("properties") or {}, name_property) for ft in features
+        }
+        missing = [w for w in wanted if not any(w in names[id(ft)] for ft in features)]
+        if missing:
+            found = sorted({n for ns in names.values() for n in ns})
+            raise ValueError(f"No feature named {missing} in {path} (found: {found})")
+        features = [ft for ft in features if any(w in names[id(ft)] for w in wanted)]
+    geom = unary_union([shape(ft["geometry"]) for ft in features])
+    return geom if geom.is_valid else geom.buffer(0)
 
 
 def boundary_cells(boundary, resolution: int) -> list[str]:
-    return sorted(h3.geo_to_cells(boundary, resolution))
+    """Cells whose centre is inside the boundary (h3 polygon_to_cells)."""
+    shape_ = h3.geo_to_h3shape(boundary.__geo_interface__)
+    return sorted(h3.polygon_to_cells(shape_, resolution))
 
 
 def _seeded_centres(
@@ -113,38 +157,89 @@ def synthetic_cells(
     return _cell_table(cell_ids, pop)
 
 
-def cells_from_worldpop(boundary, raster_path: Path, resolution: int) -> pd.DataFrame:
-    import rasterio
-    from rasterio.warp import transform as warp_transform
+def raster_cells(boundary, raster_path: Path, resolution: int) -> pd.DataFrame:
+    """Population per boundary cell from a raster clipped to the boundary.
 
+    Pixels outside the boundary are dropped. A pixel inside the boundary can
+    still fall in a coastal cell whose centre is offshore (so not in the grid);
+    its population goes to the nearest grid cell, so none is lost.
+    """
+    import rasterio
+    import rasterio.mask
+    from rasterio.warp import transform as warp_transform
+    from rasterio.warp import transform_geom
+
+    cell_ids = boundary_cells(boundary, resolution)
     with rasterio.open(raster_path) as src:
-        data = src.read(1)
-        nodata = src.nodata
-        mask = np.isfinite(data) & (data > 0)
-        if nodata is not None:
-            mask &= data != nodata
+        geom = boundary.__geo_interface__
+        if src.crs and src.crs.to_string() not in ("EPSG:4326", "OGC:CRS84"):
+            geom = transform_geom("EPSG:4326", src.crs, geom)
+        data, transform = rasterio.mask.mask(src, [geom], crop=True, filled=False)
+        band = data[0]
+        mask = ~np.ma.getmaskarray(band)
+        values = np.ma.getdata(band).astype(float)
+        mask &= np.isfinite(values) & (values > 0)
+        if src.nodata is not None:
+            mask &= values != src.nodata
         rows, cols = np.where(mask)
-        xs, ys = rasterio.transform.xy(src.transform, rows, cols, offset="center")
+        xs, ys = rasterio.transform.xy(transform, rows, cols, offset="center")
         if src.crs and src.crs.to_string() not in ("EPSG:4326", "OGC:CRS84"):
             xs, ys = warp_transform(src.crs, "EPSG:4326", xs, ys)
         lons = np.asarray(xs, dtype=float)
         lats = np.asarray(ys, dtype=float)
-        values = data[rows, cols].astype(float)
+        values = values[rows, cols]
 
-    cell_ids = [h3.latlng_to_cell(lat, lon, resolution) for lat, lon in zip(lats, lons)]
-    grouped = (
-        pd.DataFrame({"cell_id": cell_ids, "population": values})
-        .groupby("cell_id", as_index=False)["population"]
-        .sum()
+    pixel_cells = [h3.latlng_to_cell(lat, lon, resolution) for lat, lon in zip(lats, lons)]
+    per_cell = pd.Series(values).groupby(pd.Series(pixel_cells)).sum()
+    in_grid = set(cell_ids)
+    centres = {cid: h3.cell_to_latlng(cid) for cid in cell_ids}
+    totals = dict.fromkeys(cell_ids, 0.0)
+    moved = 0.0
+    for cid, pop in per_cell.items():
+        if cid not in in_grid:
+            lat, lon = h3.cell_to_latlng(cid)
+            cid = min(centres, key=lambda c: haversine_km(lat, lon, *centres[c]))
+            moved += pop
+        totals[cid] += pop
+    total = float(values.sum())
+    print(
+        f"  raster clipped to boundary: {total:,.0f} people; "
+        f"{moved:,.0f} ({100 * moved / total if total else 0:.1f}%) in offshore-centred "
+        "coastal cells moved to the nearest land cell",
+        file=sys.stderr,
     )
-    latlon = [h3.cell_to_latlng(cid) for cid in grouped["cell_id"]]
-    grouped["lat"] = [p[0] for p in latlon]
-    grouped["lon"] = [p[1] for p in latlon]
-    inside = [
-        boundary.contains(Point(lon, lat)) or boundary.touches(Point(lon, lat))
-        for lat, lon in zip(grouped["lat"], grouped["lon"])
-    ]
-    return grouped.loc[inside, ["cell_id", "lat", "lon", "population"]].reset_index(drop=True)
+    return _cell_table(cell_ids, np.array([totals[c] for c in cell_ids]))
+
+
+def landmasses(cell_ids: list[str]) -> list[set[str]]:
+    """Groups of cells joined by H3 neighbour links, biggest first."""
+    import networkx as nx
+
+    ids = set(cell_ids)
+    G = nx.Graph()
+    G.add_nodes_from(cell_ids)
+    for cid in cell_ids:
+        G.add_edges_from((cid, nb) for nb in h3.grid_ring(cid, 1) if nb in ids)
+    return sorted(nx.connected_components(G), key=lambda c: (-len(c), min(c)))
+
+
+def drop_small_components(df: pd.DataFrame, min_population: float) -> pd.DataFrame:
+    pop = dict(zip(df.cell_id, df.population))
+    dropped = []
+    for comp in landmasses(list(df.cell_id)):
+        total = sum(pop[c] for c in comp)
+        if total < min_population:
+            lat, lon = h3.cell_to_latlng(min(comp))
+            dropped.append((len(comp), total, lat, lon))
+    if not dropped:
+        return df
+    for n, total, lat, lon in dropped:
+        print(
+            f"  dropped landmass of {n} cell(s), population {total:,.0f}, near ({lat:.2f}, {lon:.2f})",
+            file=sys.stderr,
+        )
+    keep = set().union(*(c for c in landmasses(list(df.cell_id)) if sum(pop[x] for x in c) >= min_population))
+    return df[df.cell_id.isin(keep)].reset_index(drop=True)
 
 
 def load_or_build_cells(region: Region, root: Path, *, write: bool = True) -> pd.DataFrame:
@@ -161,17 +256,28 @@ def load_or_build_cells(region: Region, root: Path, *, write: bool = True) -> pd
     if cached is not None:
         return cached
 
-    boundary = load_boundary(region.boundary_path)
-    resolution = region.spec.h3_resolution
+    spec = region.spec
+    boundary = load_boundary(
+        region.boundary_path, spec.boundary_feature_name, spec.boundary_name_property
+    )
+    resolution = spec.h3_resolution
     if region.population_path.exists():
-        df = cells_from_worldpop(boundary, region.population_path, resolution)
+        df = raster_cells(boundary, region.population_path, resolution)
+        source = f"from {region.population_path.name}"
     else:
         print(
             f"WARNING: {region.population_path} missing; "
             f"using a synthetic population for region {region.name!r}.",
             file=sys.stderr,
         )
-        df = synthetic_cells(boundary, resolution, region.spec.synthetic, region.name)
+        df = synthetic_cells(boundary, resolution, spec.synthetic, region.name)
+        source = "synthetic"
+    df = drop_small_components(df, spec.min_component_population)
+    print(
+        f"Region {region.name}: {len(df)} cells inside the boundary, "
+        f"population {df['population'].sum() / 1e6:.2f} million ({source})",
+        file=sys.stderr,
+    )
 
     if write:
         write_keyed(df, cells_path, key)

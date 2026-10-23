@@ -42,6 +42,23 @@ class LatencyConfig(BaseModel):
     speed_km_per_ms: float = 300
 
 
+class SubseaConfig(BaseModel):
+    """Subsea links between landmasses. Capacity, cost and latency feed the
+    tiered mesh routing (mesh steps 5-6); topology and cuts use them now."""
+
+    headroom: float = 2.0
+    min_mbps: float = 5000
+    latency_ms: float = 0.3
+    latency_ms_per_km: float = 1 / 200
+    cost_per_km: float = 1.0
+    outage_sensitivity: float = 0.0
+    # Automatic links (landmasses without a hub) land on the most populous
+    # cell within this distance of the target's nearest point...
+    landing_radius_km: float = 30.0
+    # ...that has at least this many people.
+    landing_min_population: float = 500.0
+
+
 class MeshConfig(BaseModel):
     endpoint_exponent: float = 1.5
     endpoint_headroom: float = 1.2
@@ -67,6 +84,7 @@ class MeshConfig(BaseModel):
     # Results and routing
     isolation_threshold: float = 0.2
     routing_algorithm: Literal["mincost", "maxflow"] = "mincost"
+    subsea: SubseaConfig = Field(default_factory=SubseaConfig)
 
 
 AREA_TYPES = ("city_centre", "nightlife", "suburban", "rural")
@@ -148,6 +166,12 @@ class GreedyConfig(BaseModel):
     battery_margin_pct: float = 5.0
 
 
+class FleetConfig(BaseModel):
+    # None: exactly the HAPS listed in the region's assets. A number: listed
+    # positions first, the rest placed automatically.
+    count: int | None = None
+
+
 class PlatformConfig(BaseModel):
     id: str
     lat: float
@@ -160,6 +184,11 @@ class AppConfig(BaseModel):
     # area_types: per-area curves, ground sized for each cell's own peak.
     demand_model: Literal["single", "area_types"] = "single"
     controller: Literal["static", "greedy"] = "static"
+    # Until mesh routing exists: cells cut off from the largest hub's ground
+    # network keep only local_traffic_share of demand on the ground, and
+    # gateways there are unusable.
+    isolation_proxy: bool = False
+    local_traffic_share: float = 0.2
     grid: GridConfig = Field(default_factory=GridConfig)
     demand: DemandConfig = Field(default_factory=DemandConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
@@ -168,6 +197,7 @@ class AppConfig(BaseModel):
     traffic: TrafficConfig = Field(default_factory=TrafficConfig)
     dynamics: DynamicsConfig = Field(default_factory=DynamicsConfig)
     greedy: GreedyConfig = Field(default_factory=GreedyConfig)
+    fleet: FleetConfig = Field(default_factory=FleetConfig)
     haps: list[PlatformConfig] = Field(default_factory=list)
     gateways: list[PlatformConfig] = Field(default_factory=list)
 

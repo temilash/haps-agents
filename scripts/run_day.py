@@ -31,7 +31,7 @@ def nearest_hub(sim: Simulation, lat: float, lon: float) -> str:
 def simulate(cfg, region, controller_name: str, start: str, hours: float, run_id: str):
     sim = Simulation(config=cfg, region=region)
     controller = make_controller(controller_name, cfg.greedy)
-    log = sim.processed_dir / "runs" / f"{run_id}_{controller_name}.jsonl"
+    log = sim.processed_dir / "runs" / f"{run_id}_{controller_name}_h{len(sim.haps)}.jsonl"
     t0 = time.perf_counter()
     results = run(sim, controller, start=start, hours=hours, log_path=log)
     return sim, results, time.perf_counter() - t0, log
@@ -55,10 +55,13 @@ def main() -> None:
     parser.add_argument("--controller", choices=["static", "greedy"], default="greedy")
     parser.add_argument("--start", default="06:00")
     parser.add_argument("--hours", type=float, default=24.0)
+    parser.add_argument("--haps", type=int, help="fleet size (overrides fleet.count)")
     args = parser.parse_args()
 
     region = load_region(args.region)
     cfg = region_config(region)
+    if args.haps is not None:
+        cfg.fleet.count = args.haps
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     names = [args.controller] + (["static"] if args.controller != "static" else [])
     runs = {name: simulate(cfg, region, name, args.start, args.hours, run_id) for name in names}
@@ -68,7 +71,8 @@ def main() -> None:
     head = f"{'time':>5} {'demand':>9} " + " ".join(
         f"| {n + ': served% crit% unserved':<34}" for n in names
     )
-    print(f"\nRegion {region.name}, {cfg.traffic.day_type}, {cfg.demand_model} demand, "
+    n_haps = len(runs[names[0]][0].haps)
+    print(f"\nRegion {region.name}, {n_haps} HAPS, {cfg.traffic.day_type}, {cfg.demand_model} demand, "
           f"tick {tick:g} min. Demand and unserved in Gbps.\n")
     print(head)
     first = runs[names[0]][1]

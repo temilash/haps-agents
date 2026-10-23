@@ -1,0 +1,39 @@
+name: uk
+h3_resolution: 5
+# Paths are relative to this folder.
+# boundary.geojson: ONS "Countries (December 2023) Boundaries UK BUC" (Open
+#   Government Licence); all four countries, merged into one MultiPolygon.
+# population.tif: WorldPop 2020 UN-adjusted, 1 km (CC BY 4.0), gitignored:
+#   https://data.worldpop.org/GIS/Population/Global_2000_2020_1km_UNadj/2020/GBR/gbr_ppp_2020_1km_Aggregated_UNadj.tif
+#   Without it, the synthetic population below is used.
+boundary: boundary.geojson
+boundary_feature_name: all
+population: population.tif
+min_component_population: 2000
+
+overrides: {}
+
+synthetic:
+  sigma_km: 25
+  cities:
+    - {name: London, lat: 51.5074, lon: -0.1278, population: 9000000}
+    - {name: Birmingham, lat: 52.4862, lon: -1.8904, population: 2900000}
+    - {name: Manchester, lat: 53.4808, lon: -2.2426, population: 2800000}
+    - {name: Leeds, lat: 53.8008, lon: -1.5491, population: 2300000}
+    - {name: Glasgow, lat: 55.8642, lon: -4.2518, population: 1800000}
+    - {name: Liverpool, lat: 53.4084, lon: -2.9916, population: 1400000}
+    - {name: Newcastle, lat: 54.9783, lon: -1.6178, population: 1100000}
+    - {name: Sheffield, lat: 53.3811, lon: -1.4701, population: 900000}
+    - {name: Bristol, lat: 51.4545, lon: -2.5879, population: 700000}
+    - {name: Nottingham, lat: 52.9548, lon: -1.1581, population: 750000}
+    - {name: Edinburgh, lat: 55.9533, lon: -3.1883, population: 550000}
+    - {name: Cardiff, lat: 51.4816, lon: -3.1791, population: 480000}
+    - {name: Belfast, lat: 54.5973, lon: -5.9301, population: 640000}
+    - {name: Southampton, lat: 50.9097, lon: -1.4044, population: 850000}
+    - {name: Aberdeen, lat: 57.1497, lon: -2.0943, population: 230000}
+    - {name: Inverness, lat: 57.4778, lon: -4.2247, population: 70000}
+
+demo:
+  simple_outage: {name: Carlisle, lat: 54.89, lon: -2.93, radius_km: 30, tower_status: 0.1}
+  outages:
+    - {name: Stevenage, lat: 51.90, lon: -0.20}

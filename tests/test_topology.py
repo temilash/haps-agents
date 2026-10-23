@@ -119,13 +119,17 @@ def test_islands_without_a_hub_get_bridged():
     import h3
 
     a = h3.latlng_to_cell(50.0, 0.0, 5)
-    b = h3.latlng_to_cell(50.0, 3.0, 5)
-    ids = list(h3.grid_disk(a, 1)) + list(h3.grid_disk(b, 1))
+    b_cell = h3.latlng_to_cell(50.0, 3.0, 5)
+    ids = list(h3.grid_disk(a, 1)) + list(h3.grid_disk(b_cell, 1))
     cells = [Cell(cid, *h3.cell_to_latlng(cid), population=1000.0) for cid in ids]
     peak = {cid: (100.0 if cid == a else 1.0) for cid in ids}
     cfg = MeshConfig(hub_count=1)
     topo = build_topology(cells, peak, cfg)
-    assert len(topo.bridges) == 1
+    assert len(topo.subsea) == 1
+    ((a, b),) = topo.subsea
+    assert {a[:4], b[:4]} == {"net:"}
+    assert len(topo.roots) == 1 and topo.roots <= {c for c in ids if c in h3.grid_disk(b_cell, 1)}
     G = topo.ground_graph()
     assert nx.is_connected(G)
+    assert not nx.is_connected(topo.ground_graph(cut=set(topo.subsea_ids())))
     assert len(neighbour_pairs(cells)) == len(topo.all_neighbours)

@@ -35,20 +35,35 @@ class Topology:
     neighbours: dict[Pair, float]  # the kept ones
     density: dict[str, str]  # cell -> urban / suburban / rural
     hub_distance_km: dict[str, float]  # neighbour-path km to the nearest city cell
-    bridges: list[Pair] = field(default_factory=list)  # added to join islands
+    # Subsea links between landmasses, keyed by node pair ("pop:{hub}" or
+    # "net:{cell}"): hub-to-hub ones from backbone.yaml, and one per landmass
+    # without a hub, from its most populous cell (its tree root) to the
+    # nearest cell of a landmass with one.
+    subsea: dict[Pair, float] = field(default_factory=dict)
+    roots: set[str] = field(default_factory=set)
+    landmass: dict[str, int] = field(default_factory=dict)  # cell -> index, biggest first
 
     @property
     def city_cells(self) -> set[str]:
         return set(self.metro)
 
-    def hub_graph(self) -> nx.Graph:
+    def subsea_ids(self) -> dict[str, Pair]:
+        """Readable ids ("Belfast|Glasgow", or cell ids) -> node pair."""
+        return {"|".join(n.split(":", 1)[1] for n in pair): pair for pair in self.subsea}
+
+    def hub_graph(self, cut: set[str] = frozenset()) -> nx.Graph:
+        """Hubs joined by backbone and hub-to-hub subsea links."""
         G = nx.Graph()
         G.add_nodes_from(h.name for h in self.hubs)
         G.add_edges_from(self.backbone)
+        for sid, (a, b) in self.subsea_ids().items():
+            if sid not in cut and a.startswith("pop:") and b.startswith("pop:"):
+                G.add_edge(a[4:], b[4:])
         return G
 
-    def ground_graph(self) -> nx.Graph:
-        """net:{cell} and pop:{hub} nodes joined by kept links, with `km` and `type`."""
+    def ground_graph(self, cut: set[str] = frozenset()) -> nx.Graph:
+        """net:{cell} and pop:{hub} nodes joined by kept links, with `km` and
+        `type`. Subsea links whose id is in `cut` are left out."""
         G = nx.Graph()
         for (a, b), km in self.neighbours.items():
             G.add_edge(f"net:{a}", f"net:{b}", km=km, type="neighbour")
@@ -56,6 +71,9 @@ class Topology:
             G.add_edge(f"net:{cid}", f"pop:{hub}", km=km, type="metro")
         for (a, b), km in self.backbone.items():
             G.add_edge(f"pop:{a}", f"pop:{b}", km=km, type="backbone")
+        for sid, (a, b) in self.subsea_ids().items():
+            if sid not in cut:
+                G.add_edge(a, b, km=self.subsea[(a, b)], type="subsea")
         return G
 
 
@@ -191,12 +209,6 @@ def backbone_from_spec(spec: list, hubs: list[Hub]) -> dict[Pair, float]:
         if a not in by_name or b not in by_name:
             raise ValueError(f"backbone.yaml link [{a}, {b}] names an unknown hub")
         links[_key(a, b)] = _hub_km(by_name[a], by_name[b])
-    G = nx.Graph()
-    G.add_nodes_from(by_name)
-    G.add_edges_from(links)
-    if not nx.is_connected(G):
-        parts = [sorted(p) for p in nx.connected_components(G)]
-        print(f"WARNING: backbone.yaml hub graph is not connected: {parts}", file=sys.stderr)
     return links
 
 
@@ -215,31 +227,52 @@ def density_classes(cells: list[Cell], cfg: MeshConfig) -> dict[str, str]:
     }
 
 
-def _bridge_islands(
-    cells: list[Cell], pairs: dict[Pair, float], city: set[str]
-) -> list[Pair]:
-    """Join neighbour-graph components with no city cell to the nearest cell
-    elsewhere, so every cell can reach a hub. Adds to `pairs` in place."""
+def landmass_links(
+    cells: list[Cell],
+    pairs: dict[Pair, float],
+    city: set[str],
+    landing_radius_km: float = 30.0,
+    landing_min_population: float = 500.0,
+) -> tuple[dict[str, int], dict[Pair, float], set[str]]:
+    """Landmass of each cell, plus a subsea link for each landmass without a
+    city cell, from its most populous cell (returned as a tree root) to a
+    landmass that has one. The cable lands on the most populous cell within
+    landing_radius_km of that landmass's nearest point, with at least
+    landing_min_population people (else the nearest such cell anywhere on it)."""
     by_id = {c.cell_id: c for c in cells}
-    bridges: list[Pair] = []
-    while True:
-        G = nx.Graph()
-        G.add_nodes_from(by_id)
-        G.add_edges_from(pairs)
-        orphan = next((comp for comp in nx.connected_components(G) if not comp & city), None)
-        if orphan is None:
-            return bridges
-        best = min(
-            (
-                haversine_km(by_id[a].lat, by_id[a].lon, by_id[b].lat, by_id[b].lon), a, b
-            )
-            for a in orphan
-            for b in by_id
-            if b not in orphan
+    G = nx.Graph()
+    G.add_nodes_from(by_id)
+    G.add_edges_from(pairs)
+    comps = sorted(nx.connected_components(G), key=lambda c: (-len(c), min(c)))
+    landmass = {cid: i for i, comp in enumerate(comps) for cid in comp}
+    served = [cid for comp in comps if comp & city for cid in comp]
+    links: dict[Pair, float] = {}
+    roots: set[str] = set()
+    for comp in comps:
+        if comp & city or not served:
+            continue
+        root = max(comp, key=lambda c: (by_id[c].population, c))
+        r = by_id[root]
+        _km, nearest = min(
+            (haversine_km(r.lat, r.lon, by_id[o].lat, by_id[o].lon), o) for o in served
         )
-        km, a, b = best
-        pairs[_key(a, b)] = km
-        bridges.append(_key(a, b))
+        target = [o for o in served if landmass[o] == landmass[nearest]]
+        n = by_id[nearest]
+        populated = [o for o in target if by_id[o].population >= landing_min_population]
+        close = [
+            o for o in populated
+            if haversine_km(n.lat, n.lon, by_id[o].lat, by_id[o].lon) <= landing_radius_km
+        ]
+        if close:
+            landing = max(close, key=lambda o: (by_id[o].population, o))
+        elif populated:
+            landing = min(populated, key=lambda o: (haversine_km(r.lat, r.lon, by_id[o].lat, by_id[o].lon), o))
+        else:
+            landing = nearest
+        km = haversine_km(r.lat, r.lon, by_id[landing].lat, by_id[landing].lon)
+        links[_key(f"net:{root}", f"net:{landing}")] = km
+        roots.add(root)
+    return landmass, links, roots
 
 
 def prune_neighbours(
@@ -248,16 +281,18 @@ def prune_neighbours(
     city: set[str],
     density: dict[str, str],
     cfg: MeshConfig,
+    roots: set[str] = frozenset(),
 ) -> tuple[dict[Pair, float], dict[str, float]]:
-    """Tree to the nearest city cell plus density-based extra links.
+    """Tree to the nearest city cell (or landmass root) plus density-based
+    extra links.
 
-    Returns the kept links and each cell's tree distance to a city cell.
+    Returns the kept links and each cell's tree distance to a city cell or root.
     """
     G = nx.Graph()
     G.add_nodes_from(c.cell_id for c in cells)
     for (a, b), km in pairs.items():
         G.add_edge(a, b, km=km)
-    dist, paths = nx.multi_source_dijkstra(G, city, weight="km")
+    dist, paths = nx.multi_source_dijkstra(G, city | roots, weight="km")
 
     kept: set[Pair] = set()
     for cid, path in paths.items():
@@ -324,31 +359,51 @@ def build_topology(
     backbone_spec: dict | None = None,
 ) -> Topology:
     hubs, metro = build_hubs(cells, peak_demand, cfg, backbone_spec)
+    city = set(metro)
+    pairs = neighbour_pairs(cells)
+    landmass, subsea, roots = landmass_links(
+        cells, pairs, city, cfg.subsea.landing_radius_km, cfg.subsea.landing_min_population
+    )
+    hub_mass = {h.name: landmass[h.cell_id] for h in hubs}
+
     if backbone_spec is not None:
         backbone = backbone_from_spec(backbone_spec.get("links", []), hubs)
+        by_name = {h.name: h for h in hubs}
+        for a, b in backbone_spec.get("subsea_links", []):
+            if a not in by_name or b not in by_name:
+                raise ValueError(f"backbone.yaml subsea link [{a}, {b}] names an unknown hub")
+            subsea[_key(f"pop:{a}", f"pop:{b}")] = _hub_km(by_name[a], by_name[b])
     else:
-        backbone = auto_backbone(hubs, cfg)
+        backbone = {}
+        for (a, b), km in auto_backbone(hubs, cfg).items():
+            if hub_mass[a] == hub_mass[b]:
+                backbone[(a, b)] = km
+            else:  # hubs on different landmasses are joined under the sea
+                subsea[_key(f"pop:{a}", f"pop:{b}")] = km
 
-    city = set(metro)
-    all_pairs = neighbour_pairs(cells)
-    pairs = dict(all_pairs)
-    bridges = _bridge_islands(cells, pairs, city)
     density = density_classes(cells, cfg)
     if cfg.mesh_mode == "pruned":
-        kept, hub_dist = prune_neighbours(cells, pairs, city, density, cfg)
+        kept, hub_dist = prune_neighbours(cells, pairs, city, density, cfg, roots)
     else:
         G = nx.Graph()
+        G.add_nodes_from(c.cell_id for c in cells)
         for (a, b), km in pairs.items():
             G.add_edge(a, b, km=km)
-        G.add_nodes_from(c.cell_id for c in cells)
-        kept, hub_dist = pairs, dict(nx.multi_source_dijkstra_path_length(G, city, weight="km"))
-    return Topology(
+        kept = pairs
+        hub_dist = dict(nx.multi_source_dijkstra_path_length(G, city | roots, weight="km"))
+    topo = Topology(
         hubs=hubs,
         backbone=backbone,
         metro=metro,
-        all_neighbours=all_pairs,
+        all_neighbours=pairs,
         neighbours=kept,
         density=density,
         hub_distance_km=hub_dist,
-        bridges=bridges,
+        subsea=subsea,
+        roots=roots,
+        landmass=landmass,
     )
+    if hubs and not nx.is_connected(topo.hub_graph()):
+        parts = [sorted(p) for p in nx.connected_components(topo.hub_graph())]
+        print(f"WARNING: hub graph (backbone + subsea) is not connected: {parts}", file=sys.stderr)
+    return topo

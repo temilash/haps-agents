@@ -1,6 +1,11 @@
 ground_model: simple       # simple | mesh
 demand_model: area_types   # area_types | single (one curve, ground sized for 20:00)
 controller: static         # static | greedy
+# Stand-in for mesh routing (mesh steps 5-6): cells with no ground path to the
+# largest hub (e.g. after a subsea cut) keep only local_traffic_share of their
+# demand on the ground; the rest overflows to HAPS. Gateways there are unusable.
+isolation_proxy: true
+local_traffic_share: 0.2
 
 # Defaults shared by every region. A region's regions/<name>/region.yaml can
 # override any of these; its assets.yaml supplies HAPS and gateway positions.
@@ -59,6 +64,15 @@ mesh:
   # A ground link counts as down for reporting below this share of nominal.
   isolation_threshold: 0.2
   routing_algorithm: mincost # mincost | maxflow
+  subsea:                    # links between landmasses
+    headroom: 2.0
+    min_mbps: 5000
+    latency_ms: 0.3
+    latency_ms_per_km: 0.005 # 0.3 ms + distance_km / 200
+    cost_per_km: 1.0
+    outage_sensitivity: 0.0  # not affected by power outages
+    landing_radius_km: 30    # automatic links land on the most populous cell
+    landing_min_population: 500  # within 30 km of the nearest point, >= 500 people
 
 # demand_model: area_types
 traffic:
@@ -109,3 +123,9 @@ greedy:
   horizon_minutes: 60
   hysteresis: 0.15
   battery_margin_pct: 5
+
+# HAPS listed in a region's assets.yaml come first; the rest are placed where
+# they cover the most uncovered 20:00 demand, with a route to a gateway.
+# Scripts take --haps N to override.
+fleet:
+  count: 6

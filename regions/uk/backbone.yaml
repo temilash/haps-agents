@@ -1,0 +1,56 @@
+# Illustrative long-haul corridors between city hubs; not any real operator's
+# network. Hubs without radius_km use mesh.hub_radius_km. subsea_links join
+# hubs on different landmasses.
+hubs:
+  London: {lat: 51.507, lon: -0.128, radius_km: 25}
+  Birmingham: {lat: 52.486, lon: -1.890, radius_km: 15}
+  Manchester: {lat: 53.480, lon: -2.242, radius_km: 15}
+  Leeds: {lat: 53.801, lon: -1.549}
+  Liverpool: {lat: 53.408, lon: -2.992}
+  Newcastle: {lat: 54.978, lon: -1.618}
+  Sheffield: {lat: 53.381, lon: -1.470}
+  Nottingham: {lat: 52.955, lon: -1.158}
+  Bristol: {lat: 51.455, lon: -2.588}
+  Southampton: {lat: 50.910, lon: -1.404}
+  Exeter: {lat: 50.718, lon: -3.533}
+  Cambridge: {lat: 52.205, lon: 0.119}
+  Carlisle: {lat: 54.892, lon: -2.932}
+  Glasgow: {lat: 55.864, lon: -4.252, radius_km: 15}
+  Edinburgh: {lat: 55.953, lon: -3.188, radius_km: 12}
+  Aberdeen: {lat: 57.150, lon: -2.094}
+  Dundee: {lat: 56.462, lon: -2.971}
+  Inverness: {lat: 57.478, lon: -4.224}
+  Cardiff: {lat: 51.481, lon: -3.179, radius_km: 12}
+  Swansea: {lat: 51.621, lon: -3.944}
+  Belfast: {lat: 54.597, lon: -5.930, radius_km: 12}
+
+links:
+  - [London, Manchester]
+  - [London, Birmingham]
+  - [London, Leeds]
+  - [London, Bristol]
+  - [London, Cambridge]
+  - [London, Southampton]
+  - [Birmingham, Manchester]
+  - [Birmingham, Bristol]
+  - [Birmingham, Cardiff]
+  - [Manchester, Liverpool]
+  - [Manchester, Leeds]
+  - [Manchester, Carlisle]
+  - [Leeds, Sheffield]
+  - [Sheffield, Nottingham]
+  - [Leeds, Newcastle]
+  - [Newcastle, Edinburgh]
+  - [Carlisle, Glasgow]
+  - [Glasgow, Edinburgh]
+  - [Edinburgh, Dundee]
+  - [Dundee, Aberdeen]
+  - [Aberdeen, Inverness]
+  - [Inverness, Glasgow]
+  - [Bristol, Cardiff]
+  - [Cardiff, Swansea]
+  - [Bristol, Exeter]
+
+subsea_links:
+  - [Belfast, Glasgow]
+  - [Belfast, Liverpool]

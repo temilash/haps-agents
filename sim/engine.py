@@ -6,10 +6,13 @@ from __future__ import annotations
 from datetime import datetime, time
 from pathlib import Path
 
+import h3
+import networkx as nx
+import numpy as np
 import pandas as pd
 
-from sim.config import AppConfig, load_config
-from sim.controllers import Action, CellObs, GatewayObs, HapsObs, Observation, PlatformSpec
+from sim.config import AppConfig, PlatformConfig, load_config
+from sim.controllers import _distances_km, Action, CellObs, GatewayObs, HapsObs, Observation, PlatformSpec
 from sim.dynamics import battery_after_tick, move_towards
 from sim.demand import (
     active_fraction,
@@ -19,19 +22,19 @@ from sim.demand import (
     set_tower_status as _set_tower_status,
 )
 from sim.endpoints import endpoint_capacities, endpoint_weights
-from sim.grid import load_or_build_cells
+from sim.grid import haversine_km, load_or_build_cells
 from sim.region import DEFAULT_REGION, Region, load_region, region_config
 from sim import mesh
 from sim.latency import cell_latency_and_hops, haps_routes
 from sim.network import (
     Residuals,
-    cell_coverage,
     initial_residuals,
     merge_cell_haps,
     merge_flows,
     route_overflow,
 )
-from sim.topology import build_hubs, neighbour_pairs
+from sim.fleet import place_fleet
+from sim.topology import Topology, build_hubs, build_topology, neighbour_pairs
 from sim.traffic import TrafficModel, classify_areas
 from sim.state import (
     Cell,
@@ -82,7 +85,7 @@ class Simulation:
 
     With no `config` or `config_path`, config.yaml is merged with the region's
     overrides and assets. With no `cells`, the region's grid is loaded or built.
-    The region defaults to "england" when either is needed.
+    The region defaults to DEFAULT_REGION ("uk") when either is needed.
     """
 
     def __init__(
@@ -132,6 +135,9 @@ class Simulation:
                     cell.population, self.config.demand
                 )
 
+        self.gateways = [
+            Gateway(id=p.id, lat=p.lat, lon=p.lon) for p in self.config.gateways
+        ]
         dyn = self.config.dynamics
         self.haps = [
             Haps(
@@ -142,17 +148,63 @@ class Simulation:
                 battery_pct=dyn.battery_start_pct,
                 battery_floor_pct=dyn.battery_floor_pct,
             )
-            for p in self.config.haps
-        ]
-        self.gateways = [
-            Gateway(id=p.id, lat=p.lat, lon=p.lon) for p in self.config.gateways
+            for p in self._fleet_positions()
         ]
         self._refresh_haps_geometry()
+        self._topology: Topology | None = None
+        self.subsea_cut: set[str] = set()
         self.sim_minutes = 0.0
         self.last_result: TickResult | None = None
         self._auto_low_power: set[str] = set()
         if self.config.ground_model == "mesh":
             self._init_mesh()
+
+    def _fleet_positions(self) -> list[PlatformConfig]:
+        count = self.config.fleet.count
+        if count is None:
+            return list(self.config.haps)
+        peak = {cid: c + g for cid, (c, g) in self._demand(self.config.demand.peak_hour).items()}
+        return place_fleet(
+            count, self.config.haps, self.cells, peak, self.gateways, self.config.network
+        )
+
+    @property
+    def topology(self) -> Topology:
+        """Hubs, backbone, metro, pruned neighbour mesh and subsea links."""
+        if self._topology is None:
+            frac = self.config.demand.active_fraction_peak
+            peak = {
+                c.cell_id: sum(demand_mbps(c.population, frac, self.config.demand))
+                for c in self.cells
+            }
+            backbone = self.region.backbone if self.region is not None else None
+            self._topology = build_topology(self.cells, peak, self.config.mesh, backbone)
+        return self._topology
+
+    def subsea_links(self) -> list[str]:
+        return sorted(self.topology.subsea_ids())
+
+    def set_subsea_cut(self, links: str | list[str] | None) -> None:
+        """Cut subsea cables: "all", a list of ids from subsea_links(), or None to repair.
+
+        Cut links drop out of ground_graph(). With isolation_proxy on, cells
+        that lose their path to the largest hub are isolated from the next
+        tick (until mesh routing, mesh steps 5-6, replaces the proxy).
+        """
+        known = set(self.subsea_links())
+        if links is None:
+            chosen: set[str] = set()
+        else:
+            chosen = known if links == "all" else set([links] if isinstance(links, str) else links)
+        unknown = chosen - known
+        if unknown:
+            raise ValueError(f"unknown subsea link(s) {sorted(unknown)}; have {sorted(known)}")
+        self.subsea_cut = chosen
+        self._sync_isolation()  # gateways cut off now stop routing HAPS traffic
+
+    def ground_graph(self):
+        """The ground network as it stands, without cut subsea links."""
+        return self.topology.ground_graph(cut=self.subsea_cut)
 
     def _init_traffic(self) -> None:
         frac = self.config.demand.active_fraction_peak
@@ -169,20 +221,32 @@ class Simulation:
         for cell in self.cells:
             cell.ground_capacity_mbps = self.traffic.ground_capacity(cell)
 
+    def _active_gateways(self) -> list[Gateway]:
+        """Gateways HAPS can use: not down, and not cut off from the main network."""
+        disabled = getattr(self, "_disabled_gateways", set())
+        return [g for g in self.gateways if g.status > 0 and g.id not in disabled]
+
     def _refresh_haps_geometry(self) -> None:
-        """Routes, coverage and HAPS links for the current HAPS positions."""
+        """Routes, coverage and HAPS links for the current HAPS and gateways."""
         net = self.config.network
+        gateways = self._active_gateways()
         self.routes = haps_routes(
-            self.haps, self.gateways, net.isl_range_km, net.feeder_range_km, self.config.latency
+            self.haps, gateways, net.isl_range_km, net.feeder_range_km, self.config.latency
         )
         reachable = {hid for hid, route in self.routes.items() if route is not None}
-        self.coverage = {
-            cell.cell_id: cell_coverage(
-                cell.lat, cell.lon, self.haps, net.haps_coverage_km, allowed=reachable
-            )
-            for cell in self.cells
+        # Same as cell_coverage() per cell, vectorised: HAPS listed in fleet order.
+        lats = np.array([c.lat for c in self.cells])
+        lons = np.array([c.lon for c in self.cells])
+        within = {
+            h.id: _distances_km(h.lat, h.lon, lats, lons) <= net.haps_coverage_km
+            for h in self.haps
+            if h.id in reachable
         }
-        self._base_residuals = initial_residuals(self.haps, self.gateways, net)
+        self.coverage = {
+            cell.cell_id: [hid for hid, mask in within.items() if mask[i]]
+            for i, cell in enumerate(self.cells)
+        }
+        self._base_residuals = initial_residuals(self.haps, gateways, net)
 
     def _tick_residuals(self) -> Residuals:
         """HAPS link capacity now: low power halves access, gateway health scales feeders."""
@@ -193,7 +257,7 @@ class Simulation:
                 res.access[h.id] *= factor
         status = {g.id: g.status for g in self.gateways}
         for key in res.feeder:
-            if status[key[1]] != 1.0:
+            if status.get(key[1], 1.0) != 1.0:
                 res.feeder[key] *= status[key[1]]
         return res
 
@@ -228,6 +292,40 @@ class Simulation:
 
     def set_gateway_status(self, gateway_id: str, value: float) -> None:
         next(g for g in self.gateways if g.id == gateway_id).status = value
+        self._refresh_haps_geometry()
+
+    # --- isolation proxy (stands in for mesh routing until mesh steps 5-6) ---
+
+    def isolated_cells(self) -> set[str]:
+        """Cells with no ground path (respecting subsea cuts) to the largest
+        hub. Empty unless isolation_proxy is on."""
+        if not self.config.isolation_proxy:
+            return set()
+        key = frozenset(self.subsea_cut)
+        cache = self.__dict__.setdefault("_isolation_cache", {})
+        if key not in cache:
+            topo = self.topology
+            if not topo.hubs:
+                cache[key] = set()
+            else:
+                G = self.ground_graph()
+                main = nx.node_connected_component(G, f"pop:{topo.hubs[0].name}")
+                cache[key] = {c.cell_id for c in self.cells if f"net:{c.cell_id}" not in main}
+        return cache[key]
+
+    def _sync_isolation(self) -> set[str]:
+        """Disable gateways whose cell is isolated; refresh routes if that changed."""
+        isolated = self.isolated_cells()
+        disabled = set()
+        if isolated:
+            for g in self.gateways:
+                cell = min(self.cells, key=lambda c: haversine_km(c.lat, c.lon, g.lat, g.lon))
+                if cell.cell_id in isolated:
+                    disabled.add(g.id)
+        if disabled != getattr(self, "_disabled_gateways", set()):
+            self._disabled_gateways = disabled
+            self._refresh_haps_geometry()
+        return isolated
 
     def set_time(self, sim_time: float | str | datetime | time) -> None:
         hour, _label = _parse_hour(sim_time)
@@ -279,7 +377,7 @@ class Simulation:
                     id=h.id, lat=h.lat, lon=h.lon, target_lat=h.target_lat,
                     target_lon=h.target_lon, speed_kmh=h.speed_kmh,
                     battery_pct=h.battery_pct, battery_floor_pct=h.battery_floor_pct,
-                    power_mode=h.power_mode, role=h.role,
+                    power_mode=h.power_mode, role=h.role, pinned=h.pinned,
                 )
                 for h in self.haps
             ],
@@ -294,8 +392,98 @@ class Simulation:
         )
 
     def apply(self, actions: list[Action]) -> None:
+        """Controller actions; pinned HAPS are left alone."""
+        pinned = {h.id for h in self.haps if h.pinned}
         for a in actions:
-            self.assign(a.haps_id, a.target_lat, a.target_lon, a.role, a.power_mode)
+            if a.haps_id not in pinned:
+                self.assign(a.haps_id, a.target_lat, a.target_lon, a.role, a.power_mode)
+
+    # --- editing the scenario (live mode) -------------------------------------
+
+    def in_region(self, lat: float, lon: float) -> bool:
+        """Inside a grid cell, or in a cell next to one (coastal margin)."""
+        ids = getattr(self, "_cell_ids", None)
+        if ids is None:
+            ids = self._cell_ids = {c.cell_id for c in self.cells}
+        cell = h3.latlng_to_cell(lat, lon, h3.get_resolution(self.cells[0].cell_id))
+        return any(c in ids for c in h3.grid_disk(cell, 1))
+
+    def _haps(self, haps_id: str) -> Haps:
+        for h in self.haps:
+            if h.id == haps_id:
+                return h
+        raise KeyError(f"no HAPS {haps_id!r}")
+
+    def _gateway(self, gateway_id: str) -> Gateway:
+        for g in self.gateways:
+            if g.id == gateway_id:
+                return g
+        raise KeyError(f"no gateway {gateway_id!r}")
+
+    @staticmethod
+    def _next_id(prefix: str, used: set[str]) -> str:
+        n = 1
+        while f"{prefix}{n}" in used:
+            n += 1
+        return f"{prefix}{n}"
+
+    def add_haps(self, lat: float | None = None, lon: float | None = None) -> Haps:
+        """One more HAPS: at the point, or placed like the starting fleet."""
+        hid = self._next_id("H", {h.id for h in self.haps})
+        if lat is None or lon is None:
+            current = [PlatformConfig(id=h.id, lat=h.lat, lon=h.lon) for h in self.haps]
+            peak = {cid: c + g for cid, (c, g) in self._demand(self.config.demand.peak_hour).items()}
+            placed = place_fleet(
+                len(current) + 1, current, self.cells, peak, self._active_gateways(), self.config.network
+            )
+            if len(placed) == len(current):
+                raise ValueError("no position with a route to a gateway is left")
+            lat, lon = placed[-1].lat, placed[-1].lon
+        dyn = self.config.dynamics
+        h = Haps(
+            id=hid, lat=lat, lon=lon, speed_kmh=dyn.speed_kmh,
+            battery_pct=dyn.battery_start_pct, battery_floor_pct=dyn.battery_floor_pct,
+        )
+        self.haps.append(h)
+        self._refresh_haps_geometry()
+        return h
+
+    def remove_haps(self, haps_id: str) -> None:
+        self.haps.remove(self._haps(haps_id))
+        self._auto_low_power.discard(haps_id)
+        self._refresh_haps_geometry()
+
+    def pin_haps(self, haps_id: str, target_lat: float, target_lon: float) -> None:
+        """Send a HAPS somewhere by hand; controllers leave it alone until unpinned."""
+        h = self._haps(haps_id)
+        h.target_lat, h.target_lon, h.pinned = target_lat, target_lon, True
+
+    def unpin_haps(self, haps_id: str) -> None:
+        self._haps(haps_id).pinned = False
+
+    def add_gateway(self, lat: float, lon: float) -> Gateway:
+        g = Gateway(id=self._next_id("GW-", {g.id for g in self.gateways}), lat=lat, lon=lon)
+        self.gateways.append(g)
+        self._gateways_changed()
+        return g
+
+    def move_gateway(self, gateway_id: str, lat: float, lon: float) -> None:
+        g = self._gateway(gateway_id)
+        g.lat, g.lon = lat, lon
+        self._gateways_changed()
+
+    def remove_gateway(self, gateway_id: str) -> None:
+        self.gateways.remove(self._gateway(gateway_id))
+        self._gateways_changed()
+
+    def _gateways_changed(self) -> None:
+        self._disabled_gateways = set()  # re-derived from isolation on the next tick
+        self._sync_isolation()
+        self._refresh_haps_geometry()
+
+    def clear_outages(self) -> None:
+        for cell in self.cells:
+            cell.tower_status = 1.0
 
     def step(self, sim_time: float | str | datetime | time | None = None) -> TickResult:
         """With `sim_time`: evaluate that time of day, nothing moves.
@@ -363,11 +551,14 @@ class Simulation:
         }
 
     def _evaluate(self, label: str | None = None) -> TickResult:
-        """Serve the current time's demand from the current state. No side effects."""
+        """Serve the current time's demand from the current state. Only cached
+        derived state (isolation, HAPS routes) is updated."""
         hour = self.sim_minutes / 60.0
         label = label or self._label()
         demand = self._demand(hour)
         lat_cfg = self.config.latency
+        isolated = self._sync_isolation()
+        local_share = self.config.local_traffic_share
 
         overflow_c: dict[str, float] = {}
         overflow_g: dict[str, float] = {}
@@ -381,6 +572,9 @@ class Simulation:
             demand_c[cell.cell_id] = crit
             demand_g[cell.cell_id] = gen
             usable = cell.ground_capacity_mbps * cell.tower_status
+            if cell.cell_id in isolated:
+                # Cut off from the main network: only local traffic stays on the ground.
+                usable = min(usable, local_share * (crit + gen))
             g_c, g_g, o_c, o_g = allocate_ground(crit, gen, usable)
             ground_c[cell.cell_id] = g_c
             ground_g[cell.cell_id] = g_g
@@ -398,6 +592,9 @@ class Simulation:
         haps_g = pass_g.served
         cell_haps = merge_cell_haps(pass_c.cell_haps, pass_g.cell_haps)
         link_flow = merge_flows(pass_c.links, pass_g.links)
+        per_cell_haps: dict[str, dict[str, float]] = {}
+        for (cell_id, hid), mbps in cell_haps.items():
+            per_cell_haps.setdefault(cell_id, {})[hid] = mbps
 
         cell_results: list[CellResult] = []
         total_demand = 0.0
@@ -419,11 +616,7 @@ class Simulation:
             h_g = haps_g.get(cid, 0.0)
             u_c = max(0.0, overflow_c.get(cid, 0.0) - h_c)
             u_g = max(0.0, overflow_g.get(cid, 0.0) - h_g)
-            per_haps = {
-                hid: mbps
-                for (cell_id, hid), mbps in cell_haps.items()
-                if cell_id == cid
-            }
+            per_haps = per_cell_haps.get(cid, {})
             latency, hops = cell_latency_and_hops(
                 g_served, lat_cfg.ground_latency_ms, per_haps, self.routes
             )
@@ -439,6 +632,7 @@ class Simulation:
                     unserved_general_mbps=u_g,
                     latency_ms=latency,
                     hops=hops,
+                    isolated=cid in isolated,
                 )
             )
             total_demand += d_c + d_g
@@ -478,6 +672,7 @@ class Simulation:
                 links_over_80pct=over80,
                 avg_ground_latency_ms=avg_ground,
                 avg_haps_latency_ms=avg_haps,
+                isolated_cells=len(isolated),
             ),
         )
 

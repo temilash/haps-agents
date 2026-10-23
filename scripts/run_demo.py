@@ -75,9 +75,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument("--ground-model", choices=["simple", "mesh"], help="override config")
+    parser.add_argument("--haps", type=int, help="fleet size (overrides fleet.count)")
     args = parser.parse_args()
     region = load_region(args.region)
     cfg = region_config(region)
+    if args.haps is not None:
+        cfg.fleet.count = args.haps
     if args.ground_model:
         cfg.ground_model = args.ground_model
     if cfg.ground_model == "mesh":

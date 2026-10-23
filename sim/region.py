@@ -12,7 +12,7 @@ from sim.config import AppConfig, deep_merge, load_config_dict
 
 ROOT = Path(__file__).resolve().parents[1]
 REGIONS_DIR = ROOT / "regions"
-DEFAULT_REGION = "england"
+DEFAULT_REGION = "uk"
 
 
 class City(BaseModel):
@@ -49,7 +49,14 @@ class RegionSpec(BaseModel):
     name: str
     h3_resolution: int = 5
     boundary: str = "boundary.geojson"
+    # Which features of the boundary file make up the region: "all" (merged
+    # into one MultiPolygon), one name, or a list of names. Names match
+    # boundary_name_property, or any *NM / name property.
+    boundary_feature_name: str | list[str] | None = "all"
+    boundary_name_property: str | None = None
     population: str = "population.tif"
+    # Separate landmasses (connected groups of cells) with fewer people are dropped.
+    min_component_population: float = 2000
     overrides: dict = Field(default_factory=dict)
     synthetic: SyntheticSpec = Field(default_factory=SyntheticSpec)
     demo: DemoSpec = Field(default_factory=DemoSpec)

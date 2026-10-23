@@ -1,14 +1,21 @@
 name: england
 h3_resolution: 5
-# Paths are relative to this folder. With no population.tif, a synthetic
+# Paths are relative to this folder. The boundary is the ONS "Countries
+# (December 2023) Boundaries UK BUC" GeoJSON (Open Government Licence),
+# which holds all four UK countries; boundary_feature_name keeps England.
+# With no population.tif (e.g. WorldPop GBR, 1 km or 100 m), a synthetic
 # population is built from `synthetic` below.
 boundary: boundary.geojson
+boundary_feature_name: England
+boundary_name_property: CTRY23NM
 population: population.tif
 
 # Any config.yaml value can be overridden here, e.g.
 # overrides:
 #   network: {haps_coverage_km: 60}
-overrides: {}
+# England keeps its four listed HAPS unless --haps says otherwise.
+overrides:
+  fleet: {count: 4}
 
 synthetic:
   sigma_km: 30

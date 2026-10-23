@@ -1,0 +1,11 @@
+# Gateways only; HAPS are placed automatically (fleet.count in config.yaml,
+# or --haps N on the scripts).
+gateways:
+  - {id: GW-London, lat: 51.507, lon: -0.128}
+  - {id: GW-Leeds, lat: 53.801, lon: -1.549}
+  - {id: GW-Preston, lat: 53.763, lon: -2.703}
+  - {id: GW-Glasgow, lat: 55.864, lon: -4.252}
+  - {id: GW-Edinburgh, lat: 55.953, lon: -3.188}
+  - {id: GW-Cardiff, lat: 51.481, lon: -3.179}
+  - {id: GW-Belfast, lat: 54.597, lon: -5.930}
+haps: []

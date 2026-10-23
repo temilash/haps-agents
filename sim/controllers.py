@@ -33,6 +33,7 @@ class HapsObs:
     battery_floor_pct: float
     power_mode: str
     role: str
+    pinned: bool = False  # moved by hand: controllers must leave it alone
 
 
 @dataclass
@@ -119,6 +120,25 @@ def has_gateway_route(
     )
 
 
+def _route_mask(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    gateways: list[GatewayObs],
+    relays: list[tuple[float, float]],
+    spec: PlatformSpec,
+) -> np.ndarray:
+    """has_gateway_route() for many points at once."""
+    feeds = np.zeros(len(lats), dtype=bool)
+    for g in gateways:
+        if g.status > 0:
+            feeds |= _distances_km(g.lat, g.lon, lats, lons) <= spec.feeder_range_km
+    out = feeds.copy()
+    for r in relays:
+        if has_gateway_route(r[0], r[1], gateways, [], spec):
+            out |= _distances_km(r[0], r[1], lats, lons) <= spec.isl_range_km
+    return out
+
+
 @dataclass
 class GreedyController(Controller):
     """Every `interval_minutes`, send each HAPS (highest battery first) to the
@@ -130,6 +150,9 @@ class GreedyController(Controller):
     battery_margin_pct: float = 5.0
     name: str = "greedy"
     _last_run: float | None = field(default=None, init=False, repr=False)
+    # Cell-to-cell coverage, computed once per grid.
+    _covers: np.ndarray | None = field(default=None, init=False, repr=False)
+    _covers_key: tuple | None = field(default=None, init=False, repr=False)
     # Positions considered in the last round, for tests and inspection.
     last_candidates: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
@@ -143,6 +166,14 @@ class GreedyController(Controller):
         lons = np.array([c.lon for c in obs.cells])
         unclaimed = np.array([max(0.0, c.overflow_mbps) for c in obs.cells])
 
+        key = (len(obs.cells), obs.cells[0].cell_id if obs.cells else None, spec.coverage_km)
+        if self._covers_key != key:
+            self._covers = np.array(
+                [_distances_km(la, lo, lats, lons) <= spec.coverage_km for la, lo in zip(lats, lons)]
+            )
+            self._covers_key = key
+        covers = self._covers
+
         def covered(lat: float, lon: float) -> np.ndarray:
             return _distances_km(lat, lon, lats, lons) <= spec.coverage_km
 
@@ -150,7 +181,11 @@ class GreedyController(Controller):
         planned = {h.id: (h.target_lat, h.target_lon) for h in obs.haps}
         actions: list[Action] = []
         self.last_candidates = {}
-        for h in sorted(obs.haps, key=lambda h: (-h.battery_pct, h.id)):
+        # Pinned HAPS stay where they were sent; their coverage is taken first.
+        for h in obs.haps:
+            if h.pinned:
+                unclaimed[covered(h.target_lat, h.target_lon)] = 0.0
+        for h in sorted((h for h in obs.haps if not h.pinned), key=lambda h: (-h.battery_pct, h.id)):
             relays = [pos for hid, pos in planned.items() if hid != h.id]
             reach_km = h.speed_kmh * self.horizon_minutes / 60.0
             trip_km = _distances_km(h.lat, h.lon, lats, lons)
@@ -163,19 +198,20 @@ class GreedyController(Controller):
             ok = (trip_km <= reach_km) & (
                 battery_after > h.battery_floor_pct + self.battery_margin_pct
             )
-            for i in np.flatnonzero(ok):
-                if not has_gateway_route(lats[i], lons[i], obs.gateways, relays, spec):
-                    ok[i] = False
+            ok &= _route_mask(lats, lons, obs.gateways, relays, spec)
             self.last_candidates[h.id] = int(ok.sum())
 
             # Staying on the current course is the baseline to beat.
             stay = (h.target_lat, h.target_lon)
             stay_score = float(unclaimed[covered(*stay)].sum())
             best_score, best = stay_score, stay
-            for i in np.flatnonzero(ok):
-                score = float(unclaimed[covered(lats[i], lons[i])].sum())
-                if score > best_score:
-                    best_score, best = score, (float(lats[i]), float(lons[i]))
+            candidates = np.flatnonzero(ok)
+            if candidates.size:
+                scores = covers[candidates] @ unclaimed
+                i = int(np.argmax(scores))  # first of equals, as a scan in order would pick
+                if scores[i] > best_score:
+                    best_score = float(scores[i])
+                    best = (float(lats[candidates[i]]), float(lons[candidates[i]]))
             if best != stay and best_score > stay_score * (1.0 + self.hysteresis):
                 actions.append(Action(h.id, best[0], best[1], h.role, h.power_mode))
                 planned[h.id] = best

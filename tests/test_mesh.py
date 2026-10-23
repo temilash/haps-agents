@@ -138,12 +138,25 @@ def _split_invariant(tick: dict) -> dict:
     return {**tick, "cells": cells, "cell_sums": sums}
 
 
+def _golden_cells():
+    """The grid the golden snapshot was recorded on: England's synthetic
+    population over the old 49.9-55.8N, 5.8W-1.8E rectangle. Regions no
+    longer use a rectangle; this only feeds the model the same inputs."""
+    from shapely.geometry import box
+
+    from sim.grid import synthetic_cells
+
+    spec = load_region("england").spec
+    return synthetic_cells(box(-5.8, 49.9, 1.8, 55.8), 5, spec.synthetic, "england")
+
+
 @pytest.mark.parametrize("model", [None, "simple"])
 def test_simple_model_unchanged(tmp_path, model):
     """Simple-model output recorded before the mesh model was added."""
     with gzip.open(GOLDEN, "rt") as f:
         golden = json.load(f)
-    sim = _sim(tmp_path, model)
+    cfg = _config(model)
+    sim = Simulation(config=cfg, cells=_golden_cells(), project_root=tmp_path)
     actual = {"12:00": sim.step("12:00").to_dict(), "20:00": sim.step("20:00").to_dict()}
     sim.set_tower_status(54.89, -2.93, 30.0, 0.1)
     actual["20:00 carlisle"] = sim.step("20:00").to_dict()

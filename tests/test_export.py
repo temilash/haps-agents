@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
@@ -9,9 +8,7 @@ from sim.engine import Simulation
 from sim.runner import run
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("export_viewer_data", ROOT / "scripts/export_viewer_data.py")
-export = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(export)
+from sim import frames as export
 
 
 def test_export_static_and_run(tmp_path: Path):
@@ -26,15 +23,15 @@ def test_export_static_and_run(tmp_path: Path):
     props = cells["features"][0]["properties"]
     assert set(props) == {"cell_id", "population", "area_type", "hub"}
     static = json.loads((out / "static.json").read_text())
-    assert len(static["hubs"]) == 14 and len(static["backbone"]) == 25
+    assert len(static["hubs"]) == 14 and len(static["backbone"]) == 25 and static["subsea"] == []
 
     gateways = {g.id: [g.lat, g.lon] for g in sim.gateways}
     entry = export.export_run(log, gateways, out)
-    assert entry == {"run_id": "r1_greedy", "controller": "greedy", "frames": 6}
+    assert entry == {"run_id": "r1_greedy", "controller": "greedy", "haps": 4, "frames": 6}
     frames = json.loads((out / "runs/r1_greedy.json").read_text())["frames"]
     f = frames[-1]
     assert f["t"] == "20:00"
-    assert len(f["cells"]) == len(sim.cells) and len(next(iter(f["cells"].values()))) == 4
+    assert len(f["cells"]) == len(sim.cells) and len(next(iter(f["cells"].values()))) == 5
     assert {h["id"] for h in f["haps"]} == {"H1", "H2", "H3", "H4"}
     assert {link["type"] for link in f["links"]} <= {"isl", "feeder"}
     # ISL pairs are drawn once.

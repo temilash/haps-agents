@@ -28,6 +28,7 @@ class Haps:
     battery_floor_pct: float = 25.0
     power_mode: str = "normal"  # normal | low
     role: str = "serve"
+    pinned: bool = False  # moved by hand; controllers leave it alone
 
     def __post_init__(self) -> None:
         if self.target_lat is None or self.target_lon is None:
@@ -71,6 +72,7 @@ class CellResult:
     latency_ms: float
     hops: float
     transit_mbps: float = 0.0
+    isolated: bool = False  # cut off from the main ground network
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -88,6 +90,7 @@ class Totals:
     avg_haps_latency_ms: float
     pct_crossing_backhaul: float = 0.0
     backhaul_links_over_80pct: int = 0
+    isolated_cells: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -8,3 +8,6 @@ pyarrow
 pyyaml
 pydantic
 pytest
+fastapi
+uvicorn[standard]
+httpx
